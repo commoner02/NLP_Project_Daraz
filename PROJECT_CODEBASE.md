@@ -573,12 +573,13 @@ def get_sentiment_split(
     valid = anno_df.dropna(subset=["sentiment", "cleaned_text"]).copy()
     X = valid["cleaned_text"]
     y = valid["sentiment"]
-    return train_test_split(
+    X_train, X_test, y_train, y_test = train_test_split(
         X, y,
         test_size=TEST_SIZE,
         random_state=RANDOM_STATE,
         stratify=y
     )
+    return X_train, X_test, y_train, y_test
 
 
 def get_aspect_split(
@@ -661,10 +662,13 @@ def load_banglabert() -> Tuple[Any, Any]:
     """
     global _TOKENIZER, _MODEL
     if _TOKENIZER is None or _MODEL is None:
-        _TOKENIZER = AutoTokenizer.from_pretrained(BERT_MODEL_NAME)
-        _MODEL = AutoModel.from_pretrained(BERT_MODEL_NAME)
-        _MODEL.to(_DEVICE)
-        _MODEL.eval()
+        tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL_NAME)
+        model = AutoModel.from_pretrained(BERT_MODEL_NAME)
+        if model is not None:
+            model.to(_DEVICE)
+            model.eval()
+        _TOKENIZER = tokenizer
+        _MODEL = model
     return _TOKENIZER, _MODEL
 
 
