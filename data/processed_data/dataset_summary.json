@@ -1,0 +1,19 @@
+{
+  "dataset_name": "Bangla Daraz E-Commerce Review Analytics",
+  "language": "Bangla (bn)",
+  "total_bangla_reviews": 6720,
+  "annotated_bangla_reviews": 2016,
+  "unannotated_bangla_reviews": 4704,
+  "sentiment_distribution": {
+    "Positive": 1522,
+    "Negative": 306,
+    "Neutral": 188
+  },
+  "aspect_frequencies": {
+    "Product Quality": 1980,
+    "Price": 546,
+    "Delivery": 286,
+    "Packaging": 74,
+    "Seller Service": 110
+  }
+}

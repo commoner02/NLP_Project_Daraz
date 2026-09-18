@@ -1,0 +1,5 @@
+Metric,Value
+Total original reviews,19638
+Total preprocessed reviews,10657
+Total annotated reviews,3587
+Languages (preprocessed),"{'bn': 6731, 'banglish': 2797, 'mix': 1129}"
