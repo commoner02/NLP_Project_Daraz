@@ -1,0 +1,34 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual Environments
+.venv/
+venv/
+.nlp_venv/
+env/
+
+# Model binaries & caches
+**/models/**/*.pkl
+**/models/cache/*.npy
+*.bin
+*.pt
+
+# Results (regenerable artifacts)
+**/results/*.png
+**/results/*.csv
+**/results/metrics_summary.json
+
+# Keep essential directory tracking
+!**/models/**/.gitkeep
+!**/results/**/.gitkeep
+!**/data/**/.gitkeep
+
+# IDE / System files
+.DS_Store
+.vscode/
+.idea/
+*.swp

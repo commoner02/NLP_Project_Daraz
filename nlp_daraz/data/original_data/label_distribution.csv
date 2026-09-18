@@ -1,0 +1,16 @@
+Label,Count
+product_quality_positive,2747
+price_positive,814
+product_quality_negative,516
+delivery_positive,420
+product_quality_neutral,278
+seller_service_positive,215
+price_neutral,130
+packaging_positive,94
+delivery_negative,89
+packaging_negative,46
+price_negative,25
+seller_service_negative,12
+delivery_neutral,6
+packaging_neutral,5
+seller_service_neutral,2

@@ -1,0 +1,11 @@
+{
+  "include": [
+    "nlp_daraz"
+  ],
+  "extraPaths": [
+    "nlp_daraz",
+    ".nlp_venv/lib/python3.12/site-packages"
+  ],
+  "venvPath": ".",
+  "venv": ".nlp_venv"
+}
