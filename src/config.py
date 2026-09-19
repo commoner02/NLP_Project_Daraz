@@ -4,17 +4,11 @@ from pathlib import Path
 # Project paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-PROCESSED_DATA_DIR = DATA_DIR / "processed_data"
-ORIGINAL_DATA_DIR = DATA_DIR / "original_data"
 MODELS_DIR = BASE_DIR / "models"
 MODELS_TFIDF = MODELS_DIR / "tfidf"
 MODELS_BERT = MODELS_DIR / "bert"
 MODELS_CACHE = MODELS_DIR / "cache"
 RESULTS_DIR = BASE_DIR / "results"
-
-# Data files
-ANNOTATED_CSV = "annotated_bangla.csv"
-STOPWORDS_FILE = "bangla_stopwords.txt"
 
 # Tasks & Aspects
 ALL_ASPECTS = [
@@ -53,8 +47,5 @@ TFIDF_MAX_DF = 0.95
 
 def ensure_dirs() -> None:
     """Create required project directories if missing."""
-    for directory in [
-        DATA_DIR, PROCESSED_DATA_DIR, ORIGINAL_DATA_DIR,
-        MODELS_DIR, MODELS_TFIDF, MODELS_BERT, MODELS_CACHE, RESULTS_DIR
-    ]:
+    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_BERT, MODELS_CACHE, RESULTS_DIR]:
         os.makedirs(directory, exist_ok=True)

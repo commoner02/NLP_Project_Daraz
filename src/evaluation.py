@@ -3,13 +3,13 @@ from typing import Any, Dict, List, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
+import seaborn as sns  # type: ignore
 from sklearn.metrics import confusion_matrix
 
 from src.config import RESULTS_DIR
 
 
-def plot_and_save_confusion_matrix(
+def save_confusion_matrix(
     y_true: Any,
     y_pred: Any,
     labels: List[Any],
@@ -22,7 +22,10 @@ def plot_and_save_confusion_matrix(
     cm = confusion_matrix(y_true, y_pred, labels=labels)
 
     plt.figure(figsize=(7, 6))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels, cbar=True, linewidths=0.5)
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues",
+        xticklabels=labels, yticklabels=labels, cbar=True, linewidths=0.5
+    )
     plt.title(title, fontsize=13, pad=12, fontweight="bold")
     plt.xlabel("Predicted Label", fontsize=11, labelpad=8)
     plt.ylabel("True Label", fontsize=11, labelpad=8)
@@ -31,22 +34,15 @@ def plot_and_save_confusion_matrix(
     plt.close()
 
 
-def save_classification_report_csv(
-    report_dict: Dict[str, Any],
-    filename: str
-) -> None:
-    """Save Scikit-learn classification report as CSV."""
-    output_path = RESULTS_DIR / filename
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(report_dict).transpose()
-    df.to_csv(output_path, index=True)
+# Backward-compatible alias
+plot_and_save_confusion_matrix = save_confusion_matrix
 
 
 def save_metrics_summary_json(
     summary_dict: Dict[str, Any],
     filename: str = "metrics_summary.json"
 ) -> None:
-    """Save summary metrics to JSON."""
+    """Save summary metrics to JSON in results/ with safe type conversion."""
     output_path = RESULTS_DIR / filename
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -63,11 +59,15 @@ def save_metrics_summary_json(
         json.dump(summary_dict, f, indent=4, ensure_ascii=False, default=_convert)
 
 
+# Backward-compatible alias
+save_json = save_metrics_summary_json
+
+
 def save_model_comparison_csv(
     data: Union[List[Dict[str, Any]], pd.DataFrame],
     filename: str = "model_comparison.csv"
 ) -> pd.DataFrame:
-    """Save benchmark rows to CSV in results/."""
+    """Save benchmark summary rows to CSV in results/."""
     output_path = RESULTS_DIR / filename
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)

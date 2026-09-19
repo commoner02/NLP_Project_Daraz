@@ -17,193 +17,157 @@ from src.config import (
     TFIDF_CHAR_NGRAMS,
     TFIDF_MAX_DF,
     TFIDF_MIN_DF,
-    TFIDF_WORD_NGRAMS
+    TFIDF_WORD_NGRAMS,
 )
 from src.preprocessing import clean_text
 
 
 # -----------------------------------------------------------------------------
-# 1. EVALUATION & FEATURE HELPERS
+# 1. FEATURE & EVALUATION HELPERS
 # -----------------------------------------------------------------------------
-def _evaluate_classification(y_true: Any, y_pred: Any) -> Dict[str, Any]:
-    """Compute accuracy, macro/weighted F1 scores, and classification report."""
-    return {
-        "accuracy": accuracy_score(y_true, y_pred),
-        "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
-        "weighted_f1": f1_score(y_true, y_pred, average="weighted", zero_division=0),
-        "predictions": y_pred,
-        "report": classification_report(y_true, y_pred, output_dict=True, zero_division=0)
-    }
-
-
-def _evaluate_multilabel(
-    y_true_bin: Any,
-    y_pred_bin: Any,
-    target_names: List[str] = ALL_ASPECTS
-) -> Dict[str, Any]:
-    """Compute multi-label F1 scores, hamming loss, and classification report."""
-    h_loss = hamming_loss(y_true_bin, y_pred_bin)
-    return {
-        "accuracy": float(1.0 - h_loss),
-        "micro_f1": f1_score(y_true_bin, y_pred_bin, average="micro", zero_division=0),
-        "macro_f1": f1_score(y_true_bin, y_pred_bin, average="macro", zero_division=0),
-        "weighted_f1": f1_score(y_true_bin, y_pred_bin, average="weighted", zero_division=0),
-        "hamming_loss": h_loss,
-        "predictions": y_pred_bin,
-        "report": classification_report(
-            y_true_bin, y_pred_bin, target_names=target_names, output_dict=True, zero_division=0
-        )
-    }
-
-
-def _extract_features(
-    text_or_features: Union[str, np.ndarray],
-    vectorizer: Optional[Any] = None,
-    use_bert: bool = False
-) -> Tuple[Any, str]:
-    """Extract features from raw Bangla text or precomputed representations."""
-    if not isinstance(text_or_features, str):
-        return text_or_features, ""
-
-    cleaned = clean_text(text_or_features)
-    if use_bert:
-        from src.embeddings import get_bert_features
-        feat = get_bert_features([cleaned if cleaned else "ভালো"])
-    else:
-        if not cleaned or vectorizer is None:
-            return None, ""
-        feat = vectorizer.transform([cleaned])
-
-    return feat, cleaned
-
-
-def build_tfidf_union() -> FeatureUnion:
+def build_tfidf() -> FeatureUnion:
     """Build word + character n-gram TF-IDF FeatureUnion."""
     return FeatureUnion([
-        ("word_tfidf", TfidfVectorizer(
+        ("word", TfidfVectorizer(
             analyzer="word",
-            token_pattern=r"[\u0980-\u09FF\w]+",
+            token_pattern=r"[\u0980-\u09FFA-Za-z0-9]+",
             ngram_range=TFIDF_WORD_NGRAMS,
             min_df=TFIDF_MIN_DF,
             max_df=TFIDF_MAX_DF,
-            sublinear_tf=True
+            sublinear_tf=True,
         )),
-        ("char_tfidf", TfidfVectorizer(
+        ("char", TfidfVectorizer(
             analyzer="char_wb",
             ngram_range=TFIDF_CHAR_NGRAMS,
             min_df=TFIDF_MIN_DF,
             max_df=TFIDF_MAX_DF,
-            sublinear_tf=True
-        ))
+            sublinear_tf=True,
+        )),
     ])
+
+
+# Backward-compatible alias
+build_tfidf_union = build_tfidf
+
+
+def _evaluate(y_true: Any, y_pred: Any, multilabel: bool = False) -> Dict[str, Any]:
+    """Standardized evaluation for single-label and multi-label tasks."""
+    if multilabel:
+        return {
+            "hamming_loss": float(hamming_loss(y_true, y_pred)),
+            "micro_f1": float(f1_score(y_true, y_pred, average="micro", zero_division=0)),
+            "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+            "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
+            "predictions": y_pred,
+            "report": classification_report(
+                y_true, y_pred, target_names=ALL_ASPECTS, output_dict=True, zero_division=0
+            ),
+        }
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
+        "predictions": y_pred,
+        "report": classification_report(y_true, y_pred, output_dict=True, zero_division=0),
+    }
 
 
 # -----------------------------------------------------------------------------
 # 2. MODEL TRAINING ROUTINES
 # -----------------------------------------------------------------------------
-def train_sentiment_tfidf(
-    X_train: pd.Series,
-    y_train: pd.Series,
-    X_test: pd.Series,
-    y_test: pd.Series
-) -> Tuple[LogisticRegression, FeatureUnion, Dict[str, Any]]:
-    """Train TF-IDF + Logistic Regression for 3-class sentiment analysis."""
-    vectorizer = build_tfidf_union()
-    X_train_vec = vectorizer.fit_transform(X_train)
-    X_test_vec = vectorizer.transform(X_test)
+def train_sentiment(
+    X_tr: Any,
+    y_tr: Any,
+    X_te: Any,
+    y_te: Any,
+    use_bert: bool = False
+) -> Tuple[LogisticRegression, Optional[FeatureUnion], Dict[str, Any]]:
+    """Train 3-class sentiment classifier using TF-IDF or BanglaBERT embeddings."""
+    if use_bert:
+        model = LogisticRegression(
+            C=1.0, class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE, solver="lbfgs"
+        )
+        model.fit(X_tr, y_tr)
+        preds = model.predict(X_te)
+        return model, None, _evaluate(y_te, preds, multilabel=False)
 
-    model = LogisticRegression(C=1.0, class_weight="balanced", max_iter=1000, random_state=RANDOM_STATE, solver="lbfgs")
-    model.fit(X_train_vec, y_train)
-    preds = model.predict(X_test_vec)
-    return model, vectorizer, _evaluate_classification(y_test, preds)
-
-
-def train_sentiment_bert(
-    X_train_bert: np.ndarray,
-    y_train: pd.Series,
-    X_test_bert: np.ndarray,
-    y_test: pd.Series
-) -> Tuple[LogisticRegression, Dict[str, Any]]:
-    """Train Logistic Regression on frozen BanglaBERT embeddings for sentiment analysis."""
-    model = LogisticRegression(C=1.0, class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE, solver="lbfgs")
-    model.fit(X_train_bert, y_train)
-    preds = model.predict(X_test_bert)
-    return model, _evaluate_classification(y_test, preds)
+    vec = build_tfidf()
+    X_tr_vec = vec.fit_transform(X_tr)
+    X_te_vec = vec.transform(X_te)
+    model = LogisticRegression(
+        C=1.0, class_weight="balanced", max_iter=1000, random_state=RANDOM_STATE, solver="lbfgs"
+    )
+    model.fit(X_tr_vec, y_tr)
+    preds = model.predict(X_te_vec)
+    return model, vec, _evaluate(y_te, preds, multilabel=False)
 
 
-def train_aspect_tfidf(
-    X_train: pd.Series,
-    y_train: List[List[str]],
-    X_test: pd.Series,
-    y_test: List[List[str]]
-) -> Tuple[OneVsRestClassifier, FeatureUnion, MultiLabelBinarizer, Dict[str, Any]]:
-    """Train TF-IDF + OneVsRest Logistic Regression for multi-label aspect detection."""
+def train_aspects(
+    X_tr: Any,
+    y_tr: List[List[str]],
+    X_te: Any,
+    y_te: List[List[str]],
+    use_bert: bool = False
+) -> Tuple[OneVsRestClassifier, Optional[FeatureUnion], MultiLabelBinarizer, Dict[str, Any]]:
+    """Train multi-label aspect classifier using TF-IDF or BanglaBERT embeddings."""
     mlb = MultiLabelBinarizer(classes=ALL_ASPECTS)
-    y_train_bin = mlb.fit_transform(y_train)
-    y_test_bin = mlb.transform(y_test)
+    y_tr_bin = mlb.fit_transform(y_tr)
+    y_te_bin = mlb.transform(y_te)
 
-    vectorizer = build_tfidf_union()
-    X_train_vec = vectorizer.fit_transform(X_train)
-    X_test_vec = vectorizer.transform(X_test)
+    base = LogisticRegression(
+        C=1.0, class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE, solver="lbfgs"
+    )
+    ovr = OneVsRestClassifier(base)
 
-    base_lr = LogisticRegression(C=1.0, class_weight="balanced", max_iter=1000, random_state=RANDOM_STATE, solver="lbfgs")
-    ovr_model = OneVsRestClassifier(base_lr)
-    ovr_model.fit(X_train_vec, y_train_bin)
+    if use_bert:
+        ovr.fit(X_tr, y_tr_bin)
+        preds = ovr.predict(X_te)
+        return ovr, None, mlb, _evaluate(y_te_bin, preds, multilabel=True)
 
-    preds_bin = ovr_model.predict(X_test_vec)
-    return ovr_model, vectorizer, mlb, _evaluate_multilabel(y_test_bin, preds_bin)
-
-
-def train_aspect_bert(
-    X_train_bert: np.ndarray,
-    y_train: List[List[str]],
-    X_test_bert: np.ndarray,
-    y_test: List[List[str]]
-) -> Tuple[OneVsRestClassifier, MultiLabelBinarizer, Dict[str, Any]]:
-    """Train BanglaBERT + OneVsRest Logistic Regression for multi-label aspect detection."""
-    mlb = MultiLabelBinarizer(classes=ALL_ASPECTS)
-    y_train_bin = mlb.fit_transform(y_train)
-    y_test_bin = mlb.transform(y_test)
-
-    base_lr = LogisticRegression(C=1.0, class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE, solver="lbfgs")
-    ovr_model = OneVsRestClassifier(base_lr)
-    ovr_model.fit(X_train_bert, y_train_bin)
-
-    preds_bin = ovr_model.predict(X_test_bert)
-    return ovr_model, mlb, _evaluate_multilabel(y_test_bin, preds_bin)
+    vec = build_tfidf()
+    X_tr_vec = vec.fit_transform(X_tr)
+    X_te_vec = vec.transform(X_te)
+    ovr.fit(X_tr_vec, y_tr_bin)
+    preds = ovr.predict(X_te_vec)
+    return ovr, vec, mlb, _evaluate(y_te_bin, preds, multilabel=True)
 
 
-def train_aspect_polarity_tfidf(
-    anno_df: pd.DataFrame
-) -> Dict[str, Dict[str, Any]]:
-    """Train dedicated binary (Positive vs. Negative) classifiers for each aspect."""
-    from src.data_processing import get_aspect_polarity_splits
+def train_polarities(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Train dedicated binary (Positive vs Negative) classifiers per aspect."""
+    from src.data_processing import get_polarity_split
 
     results: Dict[str, Dict[str, Any]] = {}
     for aspect in ALL_ASPECTS:
-        split = get_aspect_polarity_splits(anno_df, aspect)
+        split = get_polarity_split(df, aspect)
         if split is None:
             continue
 
-        X_train, X_test, y_train, y_test = split
-        vectorizer = build_tfidf_union()
-        X_train_vec = vectorizer.fit_transform(X_train)
-        X_test_vec = vectorizer.transform(X_test)
+        X_tr, X_te, y_tr, y_te = split
+        vec = build_tfidf()
+        X_tr_vec = vec.fit_transform(X_tr)
+        X_te_vec = vec.transform(X_te)
 
-        model = LogisticRegression(C=1.0, class_weight="balanced", max_iter=1000, random_state=RANDOM_STATE, solver="lbfgs")
-        model.fit(X_train_vec, y_train)
-        preds = model.predict(X_test_vec)
+        model = LogisticRegression(
+            C=1.0, class_weight="balanced", max_iter=1000, random_state=RANDOM_STATE, solver="lbfgs"
+        )
+        model.fit(X_tr_vec, y_tr)
+        preds = model.predict(X_te_vec)
 
         results[aspect] = {
             "model": model,
-            "vectorizer": vectorizer,
-            "metrics": _evaluate_classification(y_test, preds),
-            "n_train": len(X_train),
-            "n_test": len(X_test),
-            "classes": model.classes_.tolist()
+            "vectorizer": vec,
+            "metrics": _evaluate(y_te, preds, multilabel=False),
+            "n_train": len(X_tr),
+            "n_test": len(X_te),
+            "classes": model.classes_.tolist(),
         }
 
     return results
+
+
+# Backward-compatible alias
+train_aspect_polarity_tfidf = train_polarities
 
 
 # -----------------------------------------------------------------------------
@@ -215,14 +179,24 @@ def predict_sentiment(
     vectorizer: Optional[Any] = None,
     use_bert: bool = False
 ) -> Dict[str, Any]:
-    """Predict 3-class sentiment ('Negative', 'Neutral', 'Positive') and confidence."""
-    feat, _ = _extract_features(text_or_features, vectorizer, use_bert=use_bert)
-    if feat is None:
-        return {
-            "sentiment": "Neutral",
-            "confidence": 0.34,
-            "probabilities": {"Positive": 0.33, "Neutral": 0.34, "Negative": 0.33}
-        }
+    """Predict 3-class sentiment with confidence and class probabilities."""
+    if isinstance(text_or_features, str):
+        cleaned = clean_text(text_or_features)
+        if not cleaned:
+            return {
+                "sentiment": "Neutral",
+                "confidence": 0.0,
+                "probabilities": {"Positive": 0.0, "Neutral": 0.0, "Negative": 0.0},
+            }
+        if use_bert:
+            from src.embeddings import get_bert_features
+            feat = get_bert_features([cleaned])
+        else:
+            if vectorizer is None:
+                return {"sentiment": "Neutral", "confidence": 0.0, "probabilities": {}}
+            feat = vectorizer.transform([cleaned])
+    else:
+        feat = text_or_features
 
     pred = str(model.predict(feat)[0])
     probs_dict = {}
@@ -244,14 +218,24 @@ def predict_aspects(
     binarizer: Optional[MultiLabelBinarizer] = None,
     use_bert: bool = False
 ) -> Dict[str, Any]:
-    """Predict present aspect categories using multi-label classification."""
+    """Predict multi-label aspect categories present in text."""
     if binarizer is None:
         binarizer = MultiLabelBinarizer(classes=ALL_ASPECTS)
         binarizer.fit([ALL_ASPECTS])
 
-    feat, _ = _extract_features(text_or_features, vectorizer, use_bert=use_bert)
-    if feat is None:
-        return {"aspects": [], "confidences": {asp: 0.0 for asp in ALL_ASPECTS}}
+    if isinstance(text_or_features, str):
+        cleaned = clean_text(text_or_features)
+        if not cleaned:
+            return {"aspects": [], "confidences": {asp: 0.0 for asp in ALL_ASPECTS}}
+        if use_bert:
+            from src.embeddings import get_bert_features
+            feat = get_bert_features([cleaned])
+        else:
+            if vectorizer is None:
+                return {"aspects": [], "confidences": {asp: 0.0 for asp in ALL_ASPECTS}}
+            feat = vectorizer.transform([cleaned])
+    else:
+        feat = text_or_features
 
     preds_bin = model.predict(feat)
     detected = list(binarizer.inverse_transform(preds_bin)[0])
@@ -266,36 +250,36 @@ def predict_aspects(
     return {"aspects": detected, "confidences": confidences}
 
 
-def _polarity_fallback(aspect: str) -> Dict[str, Any]:
-    """Default fallback dictionary for missing aspect polarity models."""
-    return {
-        "aspect": aspect,
-        "polarity": "Positive",
-        "confidence": 0.50,
-        "is_low_confidence": True,
-        "probabilities": {"Positive": 0.5, "Negative": 0.5}
-    }
-
-
 def predict_aspect_polarity(
     text: str,
     aspect: str,
     polarity_models: Dict[str, Dict[str, Any]],
     min_confidence: float = 0.60
 ) -> Dict[str, Any]:
-    """Predict binary polarity (Positive / Negative) with confidence and low-confidence flag."""
+    """Predict binary (Positive vs Negative) polarity for a specific aspect."""
     if not text or not text.strip() or aspect not in polarity_models:
-        return _polarity_fallback(aspect)
+        return {
+            "aspect": aspect,
+            "polarity": "Positive",
+            "confidence": 0.50,
+            "is_low_confidence": True,
+            "probabilities": {"Positive": 0.5, "Negative": 0.5},
+        }
 
     entry = polarity_models[aspect]
     model, vectorizer = entry["model"], entry.get("vectorizer")
     cleaned = clean_text(text)
     if not cleaned or vectorizer is None:
-        return _polarity_fallback(aspect)
+        return {
+            "aspect": aspect,
+            "polarity": "Positive",
+            "confidence": 0.50,
+            "is_low_confidence": True,
+            "probabilities": {"Positive": 0.5, "Negative": 0.5},
+        }
 
     feat = vectorizer.transform([cleaned])
     pred = str(model.predict(feat)[0])
-
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(feat)[0]
         probs_dict = {str(c): float(p) for c, p in zip(model.classes_, probs)}
@@ -304,17 +288,16 @@ def predict_aspect_polarity(
         confidence = 1.0
         probs_dict = {pred: 1.0}
 
-    is_low_confidence = confidence < min_confidence
     return {
         "aspect": aspect,
         "polarity": pred,
         "confidence": confidence,
-        "is_low_confidence": is_low_confidence,
-        "probabilities": probs_dict
+        "is_low_confidence": confidence < min_confidence,
+        "probabilities": probs_dict,
     }
 
 
-def predict_aspects_with_polarity(
+def predict_hierarchical(
     text_or_features: Union[str, np.ndarray],
     aspect_model: Any,
     polarity_models: Dict[str, Dict[str, Any]],
@@ -361,18 +344,22 @@ def predict_aspects_with_polarity(
             "is_low_confidence": is_low,
             "icon": icon,
             "color": color,
-            "bg_color": bg_color
+            "bg_color": bg_color,
         })
 
     return {
         "aspects": aspect_res["aspects"],
         "aspect_details": aspect_details,
-        "confidences": aspect_res["confidences"]
+        "confidences": aspect_res["confidences"],
     }
 
 
+# Backward-compatible alias
+predict_aspects_with_polarity = predict_hierarchical
+
+
 # -----------------------------------------------------------------------------
-# 4. ARTIFACT PERSISTENCE
+# 4. PERSISTENCE ROUTINES
 # -----------------------------------------------------------------------------
 def save_artifacts(
     task: str,
@@ -424,6 +411,10 @@ def save_polarity_artifacts(
             joblib.dump(entry["vectorizer"], target_dir / f"polarity_{safe_key}_vectorizer.pkl")
 
 
+# Backward-compatible alias
+save_polarities = save_polarity_artifacts
+
+
 def load_polarity_artifacts(
     model_type: str = "tfidf"
 ) -> Dict[str, Dict[str, Any]]:
@@ -440,3 +431,7 @@ def load_polarity_artifacts(
                 entry["vectorizer"] = joblib.load(vec_path)
             polarity_models[aspect] = entry
     return polarity_models
+
+
+# Backward-compatible alias
+load_polarities = load_polarity_artifacts

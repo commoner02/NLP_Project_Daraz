@@ -8,48 +8,29 @@ try:
     import torch
     from transformers import AutoModel, AutoTokenizer
     HAS_TORCH = True
+    _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 except ImportError:
     torch = None
     AutoModel = None
     AutoTokenizer = None
     HAS_TORCH = False
+    _DEVICE = "cpu"
 
 from src.config import BERT_BATCH_SIZE, BERT_MAX_LENGTH, BERT_MODEL_NAME
 
-
-def _get_device() -> Any:
-    """Detect available compute device."""
-    if not HAS_TORCH or torch is None:
-        return "cpu"
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
-    cpu_cores = os.cpu_count() or 4
-    torch.set_num_threads(cpu_cores)
-    return torch.device("cpu")
-
-
-_DEVICE: Any = None
 _TOKENIZER: Optional[Any] = None
 _MODEL: Optional[Any] = None
 
 
 def load_banglabert() -> Tuple[Any, Any]:
     """Lazily load and cache BanglaBERT model and tokenizer."""
-    global _TOKENIZER, _MODEL, _DEVICE
-    if not HAS_TORCH or AutoTokenizer is None or AutoModel is None or torch is None:
+    global _TOKENIZER, _MODEL
+    if not HAS_TORCH or AutoTokenizer is None or AutoModel is None:
         raise ImportError("PyTorch & Transformers required: pip install torch transformers")
-    if _DEVICE is None:
-        _DEVICE = _get_device()
+
     if _TOKENIZER is None or _MODEL is None:
-        tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL_NAME)
-        model = AutoModel.from_pretrained(BERT_MODEL_NAME)
-        if model is not None:
-            model.to(_DEVICE)
-            model.eval()
-        _TOKENIZER = tokenizer
-        _MODEL = model
+        _TOKENIZER = AutoTokenizer.from_pretrained(BERT_MODEL_NAME)
+        _MODEL = AutoModel.from_pretrained(BERT_MODEL_NAME).to(_DEVICE).eval()
     return _TOKENIZER, _MODEL
 
 
@@ -77,7 +58,7 @@ def get_bert_features(
 
     with torch.inference_mode():
         for i in range(0, len(text_list), batch_size):
-            batch_texts = [t if t.strip() else "ভালো" for t in text_list[i : i + batch_size]]
+            batch_texts = [t if t.strip() else " " for t in text_list[i : i + batch_size]]
             inputs = tokenizer(batch_texts, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
             inputs = {k: v.to(_DEVICE) for k, v in inputs.items()}
             outputs = model(**inputs)
@@ -108,6 +89,11 @@ def get_or_cache_bert_features(
                 return cached
         except Exception:
             pass
+
+    if not HAS_TORCH:
+        if cache_file.exists():
+            return np.load(cache_file)
+        raise ImportError("PyTorch & Transformers required to extract BERT embeddings: pip install torch transformers")
 
     embeddings = get_bert_features(texts, batch_size=batch_size, max_length=max_length)
     np.save(cache_file, embeddings)
