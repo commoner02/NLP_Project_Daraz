@@ -15,7 +15,7 @@
    - [`src/config.py`](#42-srcconfigpy)
    - [`src/preprocessing.py`](#43-srcpreprocessingpy)
    - [`src/data_processing.py`](#44-srcdata_processingpy)
-   - [`src/embeddings.py`](#45-srcembeddingspy)
+   - [`src/lstm_utils.py`](#45-srcembeddingspy)
    - [`src/models.py`](#46-srcmodelspy)
    - [`src/evaluation.py`](#47-srcevaluationpy)
 5. [Orchestration & Training Pipelines](#-5-orchestration--training-pipelines)
@@ -43,7 +43,7 @@ This project is a streamlined, production-grade Natural Language Processing (NLP
 3. **Aspect-Level Polarity Classification**: Dedicated binary classifiers (`Positive` vs. `Negative`) for each detected aspect, resolving polarity sparsity.
 4. **Dual Representation Benchmarking**:
    - **TF-IDF Pipeline**: Hybrid word n-grams (1, 2) + character subword n-grams (3, 5) with balanced Logistic Regression.
-   - **BanglaBERT Pipeline**: 768-dimensional contextual embeddings extracted from `sagorsarker/bangla-bert-base` with mean pooling and balanced Logistic Regression.
+   - **PyTorch LSTM Pipeline**: 768-dimensional contextual embeddings extracted from `Custom PyTorch nn.Embedding-base` with mean pooling and balanced Logistic Regression.
 5. **Robust Preprocessing & Universal Delimiters**:
    - Preserves negations (*"না"*, *"নাই"*, *"নয়"*, *"নেই"*) and contrastive conjunctions (*"কিন্তু"*).
    - Supports mixed-script/code-switching loanwords (*"battery"*, *"delivery"*, *"product"*).
@@ -64,8 +64,8 @@ This project is a streamlined, production-grade Natural Language Processing (NLP
                         ┌────────────────────────┴────────────────────────┐
                         ▼                                                 ▼
          ┌─────────────────────────────┐                   ┌─────────────────────────────┐
-         │     TF-IDF Vectorizer       │                   │    BanglaBERT Embeddings    │
-         │  (Word (1,2) + Char (3,5))  │                   │  (sagorsarker/bangla-bert)  │
+         │     TF-IDF Vectorizer       │                   │    PyTorch LSTM Embeddings    │
+         │  (Word (1,2) + Char (3,5))  │                   │  (Custom PyTorch nn.Embedding)  │
          └──────────────┬──────────────┘                   └──────────────┬──────────────┘
                         │                                                 │
          ┌──────────────┼──────────────┐                   ┌──────────────┴──────────────┐
@@ -146,7 +146,7 @@ NLP_Project/
 ## ⚙️ 3. Environment Configuration & Dependencies
 
 ### 3.1 `requirements.txt`
-```text
+```
 --extra-index-url https://download.pytorch.org/whl/cpu
 pandas>=2.0.0
 numpy>=1.24.0
@@ -160,10 +160,12 @@ torch>=2.0.0
 torchvision>=0.15.0
 transformers>=4.35.0
 ipykernel>=6.25.0
+
+
 ```
 
 ### 3.2 `.streamlit/config.toml`
-```toml
+```
 [server]
 fileWatcherType = "poll"
 headless = true
@@ -177,10 +179,11 @@ backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F8FAFC"
 textColor = "#0F172A"
 font = "sans serif"
+
 ```
 
 ### 3.3 `.gitignore`
-```gitignore
+```
 # Byte-compiled / cache files
 __pycache__/
 *.py[cod]
@@ -215,6 +218,7 @@ results/metrics_summary.json
 .vscode/
 .idea/
 *.swp
+
 ```
 
 ---
@@ -227,6 +231,7 @@ results/metrics_summary.json
 Bangla Daraz Review Analytics NLP Package.
 """
 __version__ = "1.0.0"
+
 ```
 
 ### 4.2 `src/config.py`
@@ -239,7 +244,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
 MODELS_TFIDF = MODELS_DIR / "tfidf"
-MODELS_BERT = MODELS_DIR / "bert"
+MODELS_LSTM = MODELS_DIR / "lstm"
 MODELS_CACHE = MODELS_DIR / "cache"
 RESULTS_DIR = BASE_DIR / "results"
 
@@ -266,10 +271,15 @@ ASPECT_MAPPING = {
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
-# BanglaBERT settings
-BERT_MODEL_NAME = "sagorsarker/bangla-bert-base"
-BERT_BATCH_SIZE = 32
-BERT_MAX_LENGTH = 128
+# LSTM settings
+LSTM_VOCAB_SIZE = 15000
+LSTM_EMBED_DIM = 300
+LSTM_HIDDEN_DIM = 128
+LSTM_NUM_LAYERS = 2
+LSTM_BATCH_SIZE = 32
+LSTM_MAX_LENGTH = 128
+LSTM_EPOCHS = 10
+LSTM_LR = 1e-3
 
 # TF-IDF settings
 TFIDF_WORD_NGRAMS = (1, 2)
@@ -280,8 +290,9 @@ TFIDF_MAX_DF = 0.95
 
 def ensure_dirs() -> None:
     """Create required project directories if missing."""
-    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_BERT, MODELS_CACHE, RESULTS_DIR]:
+    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_LSTM, MODELS_CACHE, RESULTS_DIR]:
         os.makedirs(directory, exist_ok=True)
+
 ```
 
 ### 4.3 `src/preprocessing.py`
@@ -321,6 +332,7 @@ def clean_text(text: str) -> str:
     text = RE_ELONGATION.sub(r"\1", text)
     text = RE_NOISE.sub(" ", text)
     return " ".join(text.split())
+
 ```
 
 ### 4.4 `src/data_processing.py`
@@ -496,114 +508,92 @@ def get_polarity_split(
 
 # Backward-compatible alias
 get_aspect_polarity_splits = get_polarity_split
+
 ```
 
-### 4.5 `src/embeddings.py`
+### 4.5 `src/lstm_utils.py`
 ```python
-import os
-from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+import torch
+from torch.utils.data import Dataset, DataLoader
+from typing import List, Dict, Tuple, Any, Union
+from collections import Counter
 import numpy as np
-import pandas as pd
 
-try:
-    import torch
-    from transformers import AutoModel, AutoTokenizer
-    HAS_TORCH = True
-    _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-except ImportError:
-    torch = None
-    AutoModel = None
-    AutoTokenizer = None
-    HAS_TORCH = False
-    _DEVICE = "cpu"
+class BanglaVocab:
+    def __init__(self, max_size: int = 15000, min_freq: int = 2):
+        self.max_size = max_size
+        self.min_freq = min_freq
+        
+        self.pad_token = "<PAD>"
+        self.unk_token = "<UNK>"
+        
+        self.word2idx = {self.pad_token: 0, self.unk_token: 1}
+        self.idx2word = {0: self.pad_token, 1: self.unk_token}
+        
+        self.vocab_size = 2
+        
+    def fit(self, texts: List[str]):
+        """Build vocabulary from a list of strings."""
+        word_freqs = Counter()
+        for text in texts:
+            words = str(text).split()
+            word_freqs.update(words)
+            
+        # Sort by frequency and filter by min_freq
+        valid_words = [word for word, count in word_freqs.most_common() if count >= self.min_freq]
+        
+        # Truncate to max_size
+        valid_words = valid_words[:self.max_size - 2]
+        
+        for word in valid_words:
+            if word not in self.word2idx:
+                self.word2idx[word] = self.vocab_size
+                self.idx2word[self.vocab_size] = word
+                self.vocab_size += 1
+                
+    def transform(self, text: str, max_length: int) -> List[int]:
+        """Convert string to list of indices with padding/truncation."""
+        words = str(text).split()
+        indices = [self.word2idx.get(w, self.word2idx[self.unk_token]) for w in words]
+        
+        if len(indices) > max_length:
+            indices = indices[:max_length]
+        else:
+            indices += [self.word2idx[self.pad_token]] * (max_length - len(indices))
+            
+        return indices
+        
+    def transform_batch(self, texts: List[str], max_length: int) -> torch.Tensor:
+        """Convert a list of strings to a padded tensor."""
+        batch = [self.transform(t, max_length) for t in texts]
+        return torch.tensor(batch, dtype=torch.long)
 
-from src.config import BERT_BATCH_SIZE, BERT_MAX_LENGTH, BERT_MODEL_NAME
+class TextDataset(Dataset):
+    def __init__(self, texts, labels, vocab: BanglaVocab, max_length: int):
+        self.texts = texts if isinstance(texts, list) else list(texts)
+        self.labels = labels if isinstance(labels, list) else list(labels)
+        self.vocab = vocab
+        self.max_length = max_length
 
-_TOKENIZER: Optional[Any] = None
-_MODEL: Optional[Any] = None
+    def __len__(self):
+        return len(self.texts)
 
+    def __getitem__(self, idx):
+        text_indices = self.vocab.transform(self.texts[idx], self.max_length)
+        # Note: we might want labels as long for CrossEntropy or float for BCE
+        return torch.tensor(text_indices, dtype=torch.long), torch.tensor(self.labels[idx])
 
-def load_banglabert() -> Tuple[Any, Any]:
-    """Lazily load and cache BanglaBERT model and tokenizer."""
-    global _TOKENIZER, _MODEL
-    if not HAS_TORCH or AutoTokenizer is None or AutoModel is None:
-        raise ImportError("PyTorch & Transformers required: pip install torch transformers")
-
-    if _TOKENIZER is None or _MODEL is None:
-        _TOKENIZER = AutoTokenizer.from_pretrained(BERT_MODEL_NAME)
-        _MODEL = AutoModel.from_pretrained(BERT_MODEL_NAME).to(_DEVICE).eval()
-    return _TOKENIZER, _MODEL
-
-
-def get_bert_features(
-    texts: Union[List[str], pd.Series, str],
-    batch_size: int = BERT_BATCH_SIZE,
-    max_length: int = BERT_MAX_LENGTH
-) -> np.ndarray:
-    """Extract frozen mean-pooled 768-dim BanglaBERT embeddings."""
-    if isinstance(texts, str):
-        text_list = [texts]
-    elif isinstance(texts, pd.Series):
-        text_list = [str(t) for t in texts.fillna("").tolist()]
-    else:
-        text_list = [str(t) if not isinstance(t, str) else t for t in texts]
-
-    if not text_list:
-        return np.zeros((0, 768), dtype=np.float32)
-
-    if not HAS_TORCH or torch is None:
-        raise ImportError("PyTorch & Transformers required: pip install torch transformers")
-
-    tokenizer, model = load_banglabert()
-    all_embeddings = []
-
-    with torch.inference_mode():
-        for i in range(0, len(text_list), batch_size):
-            batch_texts = [t if t.strip() else " " for t in text_list[i : i + batch_size]]
-            inputs = tokenizer(batch_texts, padding=True, truncation=True, max_length=max_length, return_tensors="pt")
-            inputs = {k: v.to(_DEVICE) for k, v in inputs.items()}
-            outputs = model(**inputs)
-            last_hidden = outputs.last_hidden_state
-            mask = inputs["attention_mask"].unsqueeze(-1).expand(last_hidden.size()).float()
-            sum_emb = torch.sum(last_hidden * mask, dim=1)
-            sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
-            all_embeddings.append((sum_emb / sum_mask).cpu().numpy())
-
-    return np.vstack(all_embeddings).astype(np.float32)
+def create_dataloader(texts, labels, vocab: BanglaVocab, max_length: int, batch_size: int, shuffle: bool = True) -> DataLoader:
+    """Helper to create a DataLoader from raw texts and labels."""
+    dataset = TextDataset(texts, labels, vocab, max_length)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 
-def get_or_cache_bert_features(
-    texts: Union[List[str], pd.Series],
-    cache_path: Union[str, Path],
-    batch_size: int = BERT_BATCH_SIZE,
-    max_length: int = BERT_MAX_LENGTH
-) -> np.ndarray:
-    """Load precomputed BERT embeddings from cache or compute and save."""
-    cache_file = Path(cache_path)
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    expected_len = len(texts) if hasattr(texts, "__len__") else len(list(texts))
-
-    if cache_file.exists():
-        try:
-            cached = np.load(cache_file)
-            if len(cached) == expected_len:
-                return cached
-        except Exception:
-            pass
-
-    if not HAS_TORCH:
-        if cache_file.exists():
-            return np.load(cache_file)
-        raise ImportError("PyTorch & Transformers required to extract BERT embeddings: pip install torch transformers")
-
-    embeddings = get_bert_features(texts, batch_size=batch_size, max_length=max_length)
-    np.save(cache_file, embeddings)
-    return embeddings
 ```
 
 ### 4.6 `src/models.py`
 ```python
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 import joblib
 import numpy as np
@@ -615,21 +605,64 @@ from sklearn.multiclass import OneVsRestClassifier
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import accuracy_score, classification_report, f1_score, hamming_loss
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
 from src.config import (
     ALL_ASPECTS,
-    MODELS_BERT,
+    MODELS_LSTM,
     MODELS_TFIDF,
     RANDOM_STATE,
     TFIDF_CHAR_NGRAMS,
     TFIDF_MAX_DF,
     TFIDF_MIN_DF,
     TFIDF_WORD_NGRAMS,
+    LSTM_EMBED_DIM,
+    LSTM_HIDDEN_DIM,
+    LSTM_NUM_LAYERS,
+    LSTM_EPOCHS,
+    LSTM_LR
 )
 from src.preprocessing import clean_text
 
+_DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # -----------------------------------------------------------------------------
-# 1. FEATURE & EVALUATION HELPERS
+# 1. PYTORCH LSTM MODELS
+# -----------------------------------------------------------------------------
+class SentimentLSTM(nn.Module):
+    def __init__(self, vocab_size, embed_dim=LSTM_EMBED_DIM, hidden_dim=LSTM_HIDDEN_DIM, output_dim=3, num_layers=LSTM_NUM_LAYERS, dropout=0.5):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, num_layers=num_layers, bidirectional=True, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_dim * 2, output_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.classes_ = ["Negative", "Neutral", "Positive"] 
+
+    def forward(self, text):
+        embedded = self.dropout(self.embedding(text))
+        _, (hidden, _) = self.lstm(embedded)
+        hidden = self.dropout(torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim=1))
+        return self.fc(hidden)
+
+class AspectLSTM(nn.Module):
+    def __init__(self, vocab_size, num_aspects, embed_dim=LSTM_EMBED_DIM, hidden_dim=LSTM_HIDDEN_DIM, num_layers=LSTM_NUM_LAYERS, dropout=0.5):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.lstm = nn.LSTM(embed_dim, hidden_dim, num_layers=num_layers, bidirectional=True, batch_first=True, dropout=dropout if num_layers > 1 else 0)
+        self.fc = nn.Linear(hidden_dim * 2, num_aspects)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, text):
+        embedded = self.dropout(self.embedding(text))
+        _, (hidden, _) = self.lstm(embedded)
+        hidden = self.dropout(torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim=1))
+        return self.fc(hidden)
+
+
+# -----------------------------------------------------------------------------
+# 2. FEATURE & EVALUATION HELPERS
 # -----------------------------------------------------------------------------
 def build_tfidf() -> FeatureUnion:
     """Build word + character n-gram TF-IDF FeatureUnion."""
@@ -650,10 +683,6 @@ def build_tfidf() -> FeatureUnion:
             sublinear_tf=True,
         )),
     ])
-
-
-# Backward-compatible alias
-build_tfidf_union = build_tfidf
 
 
 def _evaluate(y_true: Any, y_pred: Any, multilabel: bool = False) -> Dict[str, Any]:
@@ -680,24 +709,15 @@ def _evaluate(y_true: Any, y_pred: Any, multilabel: bool = False) -> Dict[str, A
 
 
 # -----------------------------------------------------------------------------
-# 2. MODEL TRAINING ROUTINES
+# 3. MODEL TRAINING ROUTINES
 # -----------------------------------------------------------------------------
 def train_sentiment(
     X_tr: Any,
     y_tr: Any,
     X_te: Any,
     y_te: Any,
-    use_bert: bool = False
 ) -> Tuple[LogisticRegression, Optional[FeatureUnion], Dict[str, Any]]:
-    """Train 3-class sentiment classifier using TF-IDF or BanglaBERT embeddings."""
-    if use_bert:
-        model = LogisticRegression(
-            C=1.0, class_weight="balanced", max_iter=2000, random_state=RANDOM_STATE, solver="lbfgs"
-        )
-        model.fit(X_tr, y_tr)
-        preds = model.predict(X_te)
-        return model, None, _evaluate(y_te, preds, multilabel=False)
-
+    """Train 3-class sentiment classifier using TF-IDF."""
     vec = build_tfidf()
     X_tr_vec = vec.fit_transform(X_tr)
     X_te_vec = vec.transform(X_te)
@@ -708,15 +728,43 @@ def train_sentiment(
     preds = model.predict(X_te_vec)
     return model, vec, _evaluate(y_te, preds, multilabel=False)
 
+def train_lstm_sentiment(train_loader, test_loader, vocab_size, y_te, class_mapping):
+    model = SentimentLSTM(vocab_size=vocab_size).to(_DEVICE)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LSTM_LR)
+    
+    model.train()
+    for epoch in range(LSTM_EPOCHS):
+        for texts, labels in train_loader:
+            texts, labels = texts.to(_DEVICE), labels.to(_DEVICE)
+            optimizer.zero_grad()
+            outputs = model(texts)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+    model.eval()
+    all_preds = []
+    with torch.no_grad():
+        for texts, _ in test_loader:
+            texts = texts.to(_DEVICE)
+            outputs = model(texts)
+            preds = torch.argmax(outputs, dim=1).cpu().numpy()
+            all_preds.extend(preds)
+            
+    # Map predictions back to string labels
+    idx2class = {v: k for k, v in class_mapping.items()}
+    y_pred = [idx2class[p] for p in all_preds]
+    
+    return model, _evaluate(y_te, y_pred, multilabel=False)
 
 def train_aspects(
     X_tr: Any,
     y_tr: List[List[str]],
     X_te: Any,
     y_te: List[List[str]],
-    use_bert: bool = False
 ) -> Tuple[OneVsRestClassifier, Optional[FeatureUnion], MultiLabelBinarizer, Dict[str, Any]]:
-    """Train multi-label aspect classifier using TF-IDF or BanglaBERT embeddings."""
+    """Train multi-label aspect classifier using TF-IDF."""
     mlb = MultiLabelBinarizer(classes=ALL_ASPECTS)
     y_tr_bin = mlb.fit_transform(y_tr)
     y_te_bin = mlb.transform(y_te)
@@ -726,17 +774,39 @@ def train_aspects(
     )
     ovr = OneVsRestClassifier(base)
 
-    if use_bert:
-        ovr.fit(X_tr, y_tr_bin)
-        preds = ovr.predict(X_te)
-        return ovr, None, mlb, _evaluate(y_te_bin, preds, multilabel=True)
-
     vec = build_tfidf()
     X_tr_vec = vec.fit_transform(X_tr)
     X_te_vec = vec.transform(X_te)
     ovr.fit(X_tr_vec, y_tr_bin)
     preds = ovr.predict(X_te_vec)
     return ovr, vec, mlb, _evaluate(y_te_bin, preds, multilabel=True)
+
+def train_lstm_aspects(train_loader, test_loader, vocab_size, y_te_bin, mlb):
+    num_aspects = len(ALL_ASPECTS)
+    model = AspectLSTM(vocab_size=vocab_size, num_aspects=num_aspects).to(_DEVICE)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.Adam(model.parameters(), lr=LSTM_LR)
+    
+    model.train()
+    for epoch in range(LSTM_EPOCHS):
+        for texts, labels in train_loader:
+            texts, labels = texts.to(_DEVICE), labels.to(_DEVICE)
+            optimizer.zero_grad()
+            outputs = model(texts)
+            loss = criterion(outputs, labels.float())
+            loss.backward()
+            optimizer.step()
+            
+    model.eval()
+    all_preds = []
+    with torch.no_grad():
+        for texts, _ in test_loader:
+            texts = texts.to(_DEVICE)
+            outputs = model(texts)
+            preds = (torch.sigmoid(outputs) > 0.5).int().cpu().numpy()
+            all_preds.extend(preds)
+            
+    return model, mlb, _evaluate(y_te_bin, all_preds, multilabel=True)
 
 
 def train_polarities(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
@@ -772,49 +842,52 @@ def train_polarities(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     return results
 
 
-# Backward-compatible alias
-train_aspect_polarity_tfidf = train_polarities
-
-
 # -----------------------------------------------------------------------------
-# 3. INFERENCE ROUTINES
+# 4. INFERENCE ROUTINES
 # -----------------------------------------------------------------------------
 def predict_sentiment(
     text_or_features: Union[str, np.ndarray],
     model: Any,
     vectorizer: Optional[Any] = None,
-    use_bert: bool = False
+    use_lstm: bool = False,
+    vocab: Any = None
 ) -> Dict[str, Any]:
     """Predict 3-class sentiment with confidence and class probabilities."""
-    if isinstance(text_or_features, str):
-        cleaned = clean_text(text_or_features)
-        if not cleaned:
-            return {
-                "sentiment": "Neutral",
-                "confidence": 0.0,
-                "probabilities": {"Positive": 0.0, "Neutral": 0.0, "Negative": 0.0},
-            }
-        if use_bert:
-            from src.embeddings import get_bert_features
-            feat = get_bert_features([cleaned])
-        else:
-            if vectorizer is None:
-                return {"sentiment": "Neutral", "confidence": 0.0, "probabilities": {}}
-            feat = vectorizer.transform([cleaned])
-    else:
-        feat = text_or_features
+    cleaned = clean_text(text_or_features) if isinstance(text_or_features, str) else text_or_features
+    if isinstance(cleaned, str) and not cleaned:
+        return {
+            "sentiment": "Neutral",
+            "confidence": 0.0,
+            "probabilities": {"Positive": 0.0, "Neutral": 0.0, "Negative": 0.0},
+        }
 
-    pred = str(model.predict(feat)[0])
-    probs_dict = {}
-    if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(feat)[0]
+    if use_lstm:
+        from src.config import LSTM_MAX_LENGTH
+        indices = vocab.transform(cleaned, LSTM_MAX_LENGTH)
+        tensor = torch.tensor([indices], dtype=torch.long).to(_DEVICE)
+        model.eval()
+        with torch.no_grad():
+            outputs = model(tensor)
+            probs = torch.softmax(outputs, dim=1)[0].cpu().numpy()
+        
+        pred_idx = np.argmax(probs)
+        pred = model.classes_[pred_idx]
+        confidence = float(probs[pred_idx])
         probs_dict = {str(c): float(p) for c, p in zip(model.classes_, probs)}
-        confidence = float(np.max(probs))
+        return {"sentiment": pred, "confidence": confidence, "probabilities": probs_dict}
+        
     else:
-        confidence = 1.0
-        probs_dict = {pred: 1.0}
+        feat = vectorizer.transform([cleaned]) if isinstance(cleaned, str) else cleaned
+        pred = str(model.predict(feat)[0])
+        if hasattr(model, "predict_proba"):
+            probs = model.predict_proba(feat)[0]
+            probs_dict = {str(c): float(p) for c, p in zip(model.classes_, probs)}
+            confidence = float(np.max(probs))
+        else:
+            confidence = 1.0
+            probs_dict = {pred: 1.0}
 
-    return {"sentiment": pred, "confidence": confidence, "probabilities": probs_dict}
+        return {"sentiment": pred, "confidence": confidence, "probabilities": probs_dict}
 
 
 def predict_aspects(
@@ -822,38 +895,48 @@ def predict_aspects(
     model: Any,
     vectorizer: Optional[Any] = None,
     binarizer: Optional[MultiLabelBinarizer] = None,
-    use_bert: bool = False
+    use_lstm: bool = False,
+    vocab: Any = None
 ) -> Dict[str, Any]:
     """Predict multi-label aspect categories present in text."""
     if binarizer is None:
         binarizer = MultiLabelBinarizer(classes=ALL_ASPECTS)
         binarizer.fit([ALL_ASPECTS])
 
-    if isinstance(text_or_features, str):
-        cleaned = clean_text(text_or_features)
-        if not cleaned:
-            return {"aspects": [], "confidences": {asp: 0.0 for asp in ALL_ASPECTS}}
-        if use_bert:
-            from src.embeddings import get_bert_features
-            feat = get_bert_features([cleaned])
-        else:
-            if vectorizer is None:
-                return {"aspects": [], "confidences": {asp: 0.0 for asp in ALL_ASPECTS}}
-            feat = vectorizer.transform([cleaned])
-    else:
-        feat = text_or_features
+    cleaned = clean_text(text_or_features) if isinstance(text_or_features, str) else text_or_features
+    if isinstance(cleaned, str) and not cleaned:
+        return {"aspects": [], "confidences": {asp: 0.0 for asp in ALL_ASPECTS}}
 
-    preds_bin = model.predict(feat)
-    detected = list(binarizer.inverse_transform(preds_bin)[0])
-
-    confidences = {}
-    if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(feat)[0]
+    if use_lstm:
+        from src.config import LSTM_MAX_LENGTH
+        indices = vocab.transform(cleaned, LSTM_MAX_LENGTH)
+        tensor = torch.tensor([indices], dtype=torch.long).to(_DEVICE)
+        model.eval()
+        with torch.no_grad():
+            outputs = model(tensor)
+            probs = torch.sigmoid(outputs)[0].cpu().numpy()
+            preds_bin = (probs > 0.5).astype(int)
+        
+        detected = []
+        for i, val in enumerate(preds_bin):
+            if val == 1:
+                detected.append(binarizer.classes_[i])
+        
         confidences = {str(asp): float(probs[i]) for i, asp in enumerate(binarizer.classes_)}
+        return {"aspects": detected, "confidences": confidences}
     else:
-        confidences = {asp: (1.0 if asp in detected else 0.0) for asp in ALL_ASPECTS}
+        feat = vectorizer.transform([cleaned]) if isinstance(cleaned, str) else cleaned
+        preds_bin = model.predict(feat)
+        detected = list(binarizer.inverse_transform(preds_bin)[0])
 
-    return {"aspects": detected, "confidences": confidences}
+        confidences = {}
+        if hasattr(model, "predict_proba"):
+            probs = model.predict_proba(feat)[0]
+            confidences = {str(asp): float(probs[i]) for i, asp in enumerate(binarizer.classes_)}
+        else:
+            confidences = {asp: (1.0 if asp in detected else 0.0) for asp in ALL_ASPECTS}
+
+        return {"aspects": detected, "confidences": confidences}
 
 
 def predict_aspect_polarity(
@@ -909,12 +992,13 @@ def predict_hierarchical(
     polarity_models: Dict[str, Dict[str, Any]],
     vectorizer: Optional[Any] = None,
     binarizer: Optional[MultiLabelBinarizer] = None,
-    use_bert: bool = False,
+    use_lstm: bool = False,
+    vocab: Any = None,
     min_confidence: float = 0.60
 ) -> Dict[str, Any]:
     """Hierarchical ABSA: Detect aspects, then predict specific binary polarity per aspect."""
     aspect_res = predict_aspects(
-        text_or_features, aspect_model, vectorizer=vectorizer, binarizer=binarizer, use_bert=use_bert
+        text_or_features, aspect_model, vectorizer=vectorizer, binarizer=binarizer, use_lstm=use_lstm, vocab=vocab
     )
     raw_text = text_or_features if isinstance(text_or_features, str) else ""
     aspect_details = []
@@ -960,26 +1044,30 @@ def predict_hierarchical(
     }
 
 
-# Backward-compatible alias
-predict_aspects_with_polarity = predict_hierarchical
-
-
 # -----------------------------------------------------------------------------
-# 4. PERSISTENCE ROUTINES
+# 5. PERSISTENCE ROUTINES
 # -----------------------------------------------------------------------------
 def save_artifacts(
     task: str,
     model: Any,
     vectorizer: Optional[Any] = None,
     binarizer: Optional[MultiLabelBinarizer] = None,
-    model_type: str = "tfidf"
+    model_type: str = "tfidf",
+    vocab: Optional[Any] = None
 ) -> None:
     """Save trained model artifacts to models/{model_type}/."""
-    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_BERT
+    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_LSTM
     target_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, target_dir / f"{task}_model.pkl")
-    if vectorizer is not None:
-        joblib.dump(vectorizer, target_dir / f"{task}_vectorizer.pkl")
+    
+    if model_type == "lstm":
+        torch.save(model.state_dict(), target_dir / f"{task}_model.pt")
+        if vocab is not None:
+            joblib.dump(vocab, target_dir / "vocab.pkl")
+    else:
+        joblib.dump(model, target_dir / f"{task}_model.pkl")
+        if vectorizer is not None:
+            joblib.dump(vectorizer, target_dir / f"{task}_vectorizer.pkl")
+            
     if binarizer is not None:
         joblib.dump(binarizer, target_dir / f"{task}_binarizer.pkl")
 
@@ -987,20 +1075,34 @@ def save_artifacts(
 def load_artifacts(
     task: str,
     model_type: str = "tfidf"
-) -> Tuple[Any, Optional[Any], Optional[MultiLabelBinarizer]]:
+) -> Tuple[Any, Optional[Any], Optional[MultiLabelBinarizer], Optional[Any]]:
     """Load model artifacts from models/{model_type}/."""
-    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_BERT
-    model_path = target_dir / f"{task}_model.pkl"
-    vec_path = target_dir / f"{task}_vectorizer.pkl"
+    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_LSTM
+    
     bin_path = target_dir / f"{task}_binarizer.pkl"
-
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model artifact not found at: {model_path.resolve()}")
-
-    model = joblib.load(model_path)
-    vectorizer = joblib.load(vec_path) if vec_path.exists() else None
     binarizer = joblib.load(bin_path) if bin_path.exists() else None
-    return model, vectorizer, binarizer
+    
+    if model_type == "lstm":
+        model_path = target_dir / f"{task}_model.pt"
+        vocab_path = target_dir / "vocab.pkl"
+        vocab = joblib.load(vocab_path) if vocab_path.exists() else None
+        
+        if task == "sentiment":
+            model = SentimentLSTM(vocab_size=vocab.vocab_size).to(_DEVICE)
+        elif task == "issue":
+            model = AspectLSTM(vocab_size=vocab.vocab_size, num_aspects=len(ALL_ASPECTS)).to(_DEVICE)
+        else:
+            raise ValueError(f"Unknown task: {task}")
+            
+        model.load_state_dict(torch.load(model_path, map_location=_DEVICE))
+        model.eval()
+        return model, None, binarizer, vocab
+    else:
+        model_path = target_dir / f"{task}_model.pkl"
+        vec_path = target_dir / f"{task}_vectorizer.pkl"
+        model = joblib.load(model_path)
+        vectorizer = joblib.load(vec_path) if vec_path.exists() else None
+        return model, vectorizer, binarizer, None
 
 
 def save_polarity_artifacts(
@@ -1008,7 +1110,7 @@ def save_polarity_artifacts(
     model_type: str = "tfidf"
 ) -> None:
     """Save aspect-specific polarity models and vectorizers."""
-    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_BERT
+    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_LSTM
     target_dir.mkdir(parents=True, exist_ok=True)
     for aspect, entry in polarity_models.items():
         safe_key = aspect.lower().replace(" ", "_")
@@ -1016,16 +1118,11 @@ def save_polarity_artifacts(
         if "vectorizer" in entry and entry["vectorizer"] is not None:
             joblib.dump(entry["vectorizer"], target_dir / f"polarity_{safe_key}_vectorizer.pkl")
 
-
-# Backward-compatible alias
-save_polarities = save_polarity_artifacts
-
-
 def load_polarity_artifacts(
     model_type: str = "tfidf"
 ) -> Dict[str, Dict[str, Any]]:
     """Load all saved aspect-specific polarity models."""
-    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_BERT
+    target_dir = MODELS_TFIDF if model_type == "tfidf" else MODELS_LSTM
     polarity_models: Dict[str, Dict[str, Any]] = {}
     for aspect in ALL_ASPECTS:
         safe_key = aspect.lower().replace(" ", "_")
@@ -1039,8 +1136,6 @@ def load_polarity_artifacts(
     return polarity_models
 
 
-# Backward-compatible alias
-load_polarities = load_polarity_artifacts
 ```
 
 ### 4.7 `src/evaluation.py`
@@ -1120,6 +1215,7 @@ def save_model_comparison_csv(
     df = data if isinstance(data, pd.DataFrame) else pd.DataFrame(data)
     df.to_csv(output_path, index=False)
     return df
+
 ```
 
 ---
@@ -1132,12 +1228,16 @@ import os
 import sys
 import time
 from typing import Any, Dict, List
+import numpy as np
 
 sys.path.insert(0, os.path.abspath("."))
 
 from src.config import (
     MODELS_CACHE,
     SENTIMENT_LABELS,
+    ALL_ASPECTS,
+    LSTM_BATCH_SIZE,
+    LSTM_MAX_LENGTH,
     ensure_dirs,
 )
 from src.data_processing import (
@@ -1145,7 +1245,7 @@ from src.data_processing import (
     get_sentiment_split,
     load_data,
 )
-from src.embeddings import get_or_cache_bert_features
+from src.lstm_utils import BanglaVocab, create_dataloader
 from src.evaluation import (
     save_confusion_matrix,
     save_metrics_summary_json,
@@ -1157,8 +1257,10 @@ from src.models import (
     train_aspects,
     train_polarities,
     train_sentiment,
+    train_lstm_sentiment,
+    train_lstm_aspects
 )
-
+from sklearn.preprocessing import MultiLabelBinarizer
 
 def main() -> None:
     start_time = time.time()
@@ -1181,7 +1283,7 @@ def main() -> None:
     # 2. TF-IDF MODELS
     # -------------------------------------------------------------------------
     print("\n[Step 2/4] Training TF-IDF models (Sentiment, Aspects, Polarities)...")
-    s_m_tf, s_v_tf, s_mt_tf = train_sentiment(Xs_tr, ys_tr, Xs_te, ys_te, use_bert=False)
+    s_m_tf, s_v_tf, s_mt_tf = train_sentiment(Xs_tr, ys_tr, Xs_te, ys_te)
     save_artifacts("sentiment", s_m_tf, s_v_tf, model_type="tfidf")
     save_confusion_matrix(
         ys_te, s_mt_tf["predictions"], SENTIMENT_LABELS,
@@ -1189,7 +1291,7 @@ def main() -> None:
     )
     print(f"  ✓ [TF-IDF] Sentiment -> Acc: {s_mt_tf['accuracy']:.4f} | Macro-F1: {s_mt_tf['macro_f1']:.4f} | Weighted-F1: {s_mt_tf['weighted_f1']:.4f}")
 
-    a_m_tf, a_v_tf, a_b_tf, a_mt_tf = train_aspects(Xa_tr, ya_tr, Xa_te, ya_te, use_bert=False)
+    a_m_tf, a_v_tf, a_b_tf, a_mt_tf = train_aspects(Xa_tr, ya_tr, Xa_te, ya_te)
     save_artifacts("issue", a_m_tf, a_v_tf, a_b_tf, model_type="tfidf")
     print(f"  ✓ [TF-IDF] Aspects   -> Micro-F1: {a_mt_tf['micro_f1']:.4f} | Macro-F1: {a_mt_tf['macro_f1']:.4f} | Hamming Loss: {a_mt_tf['hamming_loss']:.4f}")
 
@@ -1200,25 +1302,40 @@ def main() -> None:
         print(f"  ✓ [TF-IDF] {asp:15s} Polarity -> Acc: {m['accuracy']:.4f} | Macro-F1: {m['macro_f1']:.4f}")
 
     # -------------------------------------------------------------------------
-    # 3. BANGLABERT MODELS
+    # 3. PYTORCH LSTM MODELS
     # -------------------------------------------------------------------------
-    print("\n[Step 3/4] Extracting BanglaBERT embeddings & training classifiers...")
-    s_tr_bert = get_or_cache_bert_features(Xs_tr, MODELS_CACHE / "sentiment_train.npy")
-    s_te_bert = get_or_cache_bert_features(Xs_te, MODELS_CACHE / "sentiment_test.npy")
-    a_tr_bert = get_or_cache_bert_features(Xa_tr, MODELS_CACHE / "issue_train.npy")
-    a_te_bert = get_or_cache_bert_features(Xa_te, MODELS_CACHE / "issue_test.npy")
+    print("\n[Step 3/4] Preparing Vocab & Training LSTM classifiers...")
+    vocab = BanglaVocab()
+    vocab.fit(df["cleaned_text"].tolist())
+    print(f"  ✓ Built Vocab with {vocab.vocab_size} tokens")
 
-    s_m_bt, _, s_mt_bt = train_sentiment(s_tr_bert, ys_tr, s_te_bert, ys_te, use_bert=True)
-    save_artifacts("sentiment", s_m_bt, model_type="bert")
+    # Map sentiment string labels to integers
+    s_class_mapping = {label: idx for idx, label in enumerate(SENTIMENT_LABELS)}
+    ys_tr_int = [s_class_mapping[lbl] for lbl in ys_tr]
+    ys_te_int = [s_class_mapping[lbl] for lbl in ys_te]
+
+    s_train_loader = create_dataloader(Xs_tr, ys_tr_int, vocab, LSTM_MAX_LENGTH, LSTM_BATCH_SIZE)
+    s_test_loader = create_dataloader(Xs_te, ys_te_int, vocab, LSTM_MAX_LENGTH, LSTM_BATCH_SIZE, shuffle=False)
+
+    s_m_lstm, s_mt_lstm = train_lstm_sentiment(s_train_loader, s_test_loader, vocab.vocab_size, ys_te.tolist(), s_class_mapping)
+    save_artifacts("sentiment", s_m_lstm, model_type="lstm", vocab=vocab)
     save_confusion_matrix(
-        ys_te, s_mt_bt["predictions"], SENTIMENT_LABELS,
-        "Sentiment Confusion Matrix (BanglaBERT)", "sentiment_bert.png"
+        ys_te, s_mt_lstm["predictions"], SENTIMENT_LABELS,
+        "Sentiment Confusion Matrix (LSTM)", "sentiment_lstm.png"
     )
-    print(f"  ✓ [BanglaBERT] Sentiment -> Acc: {s_mt_bt['accuracy']:.4f} | Macro-F1: {s_mt_bt['macro_f1']:.4f} | Weighted-F1: {s_mt_bt['weighted_f1']:.4f}")
+    print(f"  ✓ [LSTM] Sentiment -> Acc: {s_mt_lstm['accuracy']:.4f} | Macro-F1: {s_mt_lstm['macro_f1']:.4f} | Weighted-F1: {s_mt_lstm['weighted_f1']:.4f}")
 
-    a_m_bt, _, a_b_bt, a_mt_bt = train_aspects(a_tr_bert, ya_tr, a_te_bert, ya_te, use_bert=True)
-    save_artifacts("issue", a_m_bt, binarizer=a_b_bt, model_type="bert")
-    print(f"  ✓ [BanglaBERT] Aspects   -> Micro-F1: {a_mt_bt['micro_f1']:.4f} | Macro-F1: {a_mt_bt['macro_f1']:.4f} | Hamming Loss: {a_mt_bt['hamming_loss']:.4f}")
+    # Map aspect lists to binary multi-labels
+    mlb = MultiLabelBinarizer(classes=ALL_ASPECTS)
+    ya_tr_bin = mlb.fit_transform(ya_tr)
+    ya_te_bin = mlb.transform(ya_te)
+
+    a_train_loader = create_dataloader(Xa_tr, ya_tr_bin, vocab, LSTM_MAX_LENGTH, LSTM_BATCH_SIZE)
+    a_test_loader = create_dataloader(Xa_te, ya_te_bin, vocab, LSTM_MAX_LENGTH, LSTM_BATCH_SIZE, shuffle=False)
+
+    a_m_lstm, a_b_lstm, a_mt_lstm = train_lstm_aspects(a_train_loader, a_test_loader, vocab.vocab_size, ya_te_bin, mlb)
+    save_artifacts("issue", a_m_lstm, binarizer=a_b_lstm, model_type="lstm", vocab=vocab)
+    print(f"  ✓ [LSTM] Aspects   -> Micro-F1: {a_mt_lstm['micro_f1']:.4f} | Macro-F1: {a_mt_lstm['macro_f1']:.4f} | Hamming Loss: {a_mt_lstm['hamming_loss']:.4f}")
 
     # -------------------------------------------------------------------------
     # 4. EXPORT BENCHMARKS & METRICS
@@ -1235,10 +1352,10 @@ def main() -> None:
         },
         {
             "Task": "Sentiment Analysis",
-            "Model": "BanglaBERT + Logistic Regression",
-            "Accuracy": round(s_mt_bt["accuracy"], 4),
-            "Macro F1": round(s_mt_bt["macro_f1"], 4),
-            "Weighted F1": round(s_mt_bt["weighted_f1"], 4),
+            "Model": "LSTM (PyTorch)",
+            "Accuracy": round(s_mt_lstm["accuracy"], 4),
+            "Macro F1": round(s_mt_lstm["macro_f1"], 4),
+            "Weighted F1": round(s_mt_lstm["weighted_f1"], 4),
             "Additional Metric": "N/A"
         },
         {
@@ -1251,11 +1368,11 @@ def main() -> None:
         },
         {
             "Task": "Aspect Detection",
-            "Model": "BanglaBERT + OneVsRest LogReg",
-            "Accuracy": round(1.0 - a_mt_bt["hamming_loss"], 4),
-            "Macro F1": round(a_mt_bt["macro_f1"], 4),
-            "Weighted F1": round(a_mt_bt["weighted_f1"], 4),
-            "Additional Metric": f"Micro-F1: {a_mt_bt['micro_f1']:.4f} | Hamming Loss: {a_mt_bt['hamming_loss']:.4f}"
+            "Model": "LSTM (PyTorch)",
+            "Accuracy": round(1.0 - a_mt_lstm["hamming_loss"], 4),
+            "Macro F1": round(a_mt_lstm["macro_f1"], 4),
+            "Weighted F1": round(a_mt_lstm["weighted_f1"], 4),
+            "Additional Metric": f"Micro-F1: {a_mt_lstm['micro_f1']:.4f} | Hamming Loss: {a_mt_lstm['hamming_loss']:.4f}"
         }
     ]
 
@@ -1280,11 +1397,11 @@ def main() -> None:
         },
         "sentiment_analysis": {
             "tfidf": {k: v for k, v in s_mt_tf.items() if k != "predictions"},
-            "banglabert": {k: v for k, v in s_mt_bt.items() if k != "predictions"},
+            "lstm": {k: v for k, v in s_mt_lstm.items() if k != "predictions"},
         },
         "aspect_detection": {
             "tfidf": {k: v for k, v in a_mt_tf.items() if k != "predictions"},
-            "banglabert": {k: v for k, v in a_mt_bt.items() if k != "predictions"},
+            "lstm": {k: v for k, v in a_mt_lstm.items() if k != "predictions"},
         },
         "aspect_polarities": {
             asp: {
@@ -1306,6 +1423,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 ```
 
 ### 5.2 `pipeline.ipynb`
@@ -1315,7 +1433,7 @@ Interactive Jupyter notebook covering the complete workflow in 8 self-contained 
 3. **Dataset Loading & Exploratory Data Analysis**: Visualizes sentiment class balance and aspect mention frequencies with Seaborn.
 4. **Train/Test Splitting**: Stratified 80/20 train/test data splits for sentiment and aspects.
 5. **Model Family 1: TF-IDF**: Word + Character n-grams for sentiment, 5-aspect multi-label classification, and 5 dedicated aspect polarities.
-6. **Model Family 2: Pretrained BanglaBERT**: Mean-pooled 768-dim embeddings from `sagorsarker/bangla-bert-base` with classification heads.
+6. **Model Family 2: Pretrained BanglaBERT**: Mean-pooled 768-dim embeddings from `Custom PyTorch nn.Embedding-base` with classification heads.
 7. **Comparative Benchmark Summary**: Generates the 9-row evaluation table and saves `model_comparison.csv` and `metrics_summary.json`.
 8. **Live Hierarchical Inference Demo**: Tests challenging multi-aspect reviews and prints structured predictions with confidence scores and emoji badges.
 
@@ -1355,11 +1473,11 @@ from src.preprocessing import clean_text
 
 
 def load_all_models():
-    """Load model artifacts for TF-IDF and BanglaBERT pipelines."""
-    loaded = {"status": "ready", "tfidf": {}, "bert": {}}
+    """Load model artifacts for TF-IDF and LSTM pipelines."""
+    loaded = {"status": "ready", "tfidf": {}, "lstm": {}}
     try:
-        s_m_tf, s_v_tf, _ = load_artifacts("sentiment", "tfidf")
-        a_m_tf, a_v_tf, a_b_tf = load_artifacts("issue", "tfidf")
+        s_m_tf, s_v_tf, _, _ = load_artifacts("sentiment", "tfidf")
+        a_m_tf, a_v_tf, a_b_tf, _ = load_artifacts("issue", "tfidf")
         p_models_tf = load_polarity_artifacts("tfidf")
 
         loaded["tfidf"] = {
@@ -1371,12 +1489,13 @@ def load_all_models():
             "polarity_models": p_models_tf,
         }
 
-        s_m_bt, _, _ = load_artifacts("sentiment", "bert")
-        a_m_bt, _, a_b_bt = load_artifacts("issue", "bert")
-        loaded["bert"] = {
-            "sentiment_model": s_m_bt,
-            "aspect_model": a_m_bt,
-            "aspect_binarizer": a_b_bt or a_b_tf,
+        s_m_lstm, _, _, s_v_lstm = load_artifacts("sentiment", "lstm")
+        a_m_lstm, _, a_b_lstm, _ = load_artifacts("issue", "lstm")
+        loaded["lstm"] = {
+            "sentiment_model": s_m_lstm,
+            "aspect_model": a_m_lstm,
+            "aspect_binarizer": a_b_lstm or a_b_tf,
+            "vocab": s_v_lstm,
             "polarity_models": p_models_tf,
         }
     except Exception as e:
@@ -1415,33 +1534,73 @@ if st is not None:
     # Custom Styling
     st.markdown("""
     <style>
-        .main-header { font-size: 2.1rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0.2rem; }
-        .sub-header { font-size: 1.0rem; color: #4B5563; margin-bottom: 1.2rem; }
-        .kpi-card {
-            background-color: #F8FAFC;
-            border-radius: 10px;
-            padding: 16px 18px;
-            border-left: 5px solid #3B82F6;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        html, body, [class*="css"] {
+            font-family: 'Inter', sans-serif;
         }
-        .kpi-title { font-size: 0.8rem; font-weight: 600; color: #64748B; text-transform: uppercase; }
-        .kpi-value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
-        .sentiment-pos { color: #10B981; }
-        .sentiment-neg { color: #EF4444; }
-        .sentiment-neu { color: #F59E0B; }
-        .aspect-row {
-            margin-bottom: 8px;
-            padding: 10px 14px;
+        
+        .main-header { 
+            font-size: 2.4rem; 
+            font-weight: 800; 
+            background: -webkit-linear-gradient(45deg, #1E3A8A, #3B82F6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.2rem; 
+        }
+        .sub-header { 
+            font-size: 1.1rem; 
+            color: #64748B; 
+            margin-bottom: 1.8rem; 
+            font-weight: 500;
+        }
+        .kpi-card {
             background-color: #FFFFFF;
+            border-radius: 12px;
+            padding: 20px 24px;
+            border: 1px solid #E2E8F0;
+            border-top: 5px solid #3B82F6;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+            transition: all 0.3s ease;
+        }
+        .kpi-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            transform: translateY(-2px);
+        }
+        .kpi-title { font-size: 0.85rem; font-weight: 600; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; }
+        .kpi-value { font-size: 1.8rem; font-weight: 700; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+        
+        .sentiment-pos { color: #059669; }
+        .sentiment-neg { color: #DC2626; }
+        .sentiment-neu { color: #D97706; }
+        
+        .aspect-row {
+            margin-bottom: 10px;
+            padding: 12px 16px;
+            background-color: #F8FAFC;
             border: 1px solid #E2E8F0;
             border-radius: 8px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            transition: all 0.2s ease;
         }
-        .aspect-name { font-weight: 600; color: #1E293B; font-size: 0.95rem; }
-        .aspect-pill { font-weight: 600; font-size: 0.85rem; padding: 4px 10px; border-radius: 6px; }
+        .aspect-row:hover {
+            background-color: #FFFFFF;
+            border-color: #CBD5E1;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            transform: translateX(4px);
+        }
+        .aspect-name { font-weight: 600; color: #334155; font-size: 0.95rem; }
+        .aspect-pill { 
+            font-weight: 600; 
+            font-size: 0.85rem; 
+            padding: 6px 12px; 
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1454,8 +1613,8 @@ if st is not None:
     comparison_df = load_benchmarks_cached()
 
     # Sidebar
-    st.sidebar.title("🛒 Daraz ABSA")
-    st.sidebar.markdown("**Sentiment & Aspect NLP Platform**")
+    st.sidebar.markdown("<h2>✨ Daraz ABSA</h2>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='color: #64748B; font-weight: 500; margin-top: -10px; margin-bottom: 20px;'>Sentiment & Aspect NLP Platform</div>", unsafe_allow_html=True)
 
     view_mode = st.sidebar.radio(
         "Navigation",
@@ -1466,15 +1625,15 @@ if st is not None:
     st.sidebar.subheader("Model Pipeline")
     selected_model = st.sidebar.radio(
         "Select Model Architecture:",
-        ["TF-IDF", "BanglaBERT"],
-        help="Toggle between TF-IDF (N-gram Union) and BanglaBERT representations."
+        ["TF-IDF", "LSTM"],
+        help="Toggle between TF-IDF (N-gram Union) and LSTM representations."
     )
 
     st.sidebar.markdown("---")
     st.sidebar.info(
         f"**Corpus**: Mendeley Bangla Daraz ABSA\n\n"
         f"**Total Reviews**: {len(dataset_df):,} rows\n\n"
-        f"**Aspects**: 5 Dimensions (Quality, Price, Delivery, Packaging, Seller)"
+        f"**Aspects**: 5 Dimensions\n(Quality, Price, Delivery, Packaging, Seller)"
     )
 
     # 1. REVIEW ANALYZER
@@ -1486,8 +1645,8 @@ if st is not None:
             st.error(f"Models missing: {models_data.get('message')}. Please run `python train_models.py` first.")
             st.stop()
 
-        use_bert = (selected_model == "BanglaBERT")
-        active = models_data["bert"] if use_bert else models_data["tfidf"]
+        use_lstm = (selected_model == "LSTM")
+        active = models_data["lstm"] if use_lstm else models_data["tfidf"]
 
         presets = {
             "— choose sample preset —": "",
@@ -1516,21 +1675,27 @@ if st is not None:
                     with st.spinner(f"Analyzing with {selected_model}..."):
                         cleaned = clean_text(user_text)
 
-                        if use_bert:
-                            s_res = predict_sentiment(user_text, active["sentiment_model"], use_bert=True)
+                        if use_lstm:
+                            s_res = predict_sentiment(
+                                user_text, 
+                                active["sentiment_model"], 
+                                use_lstm=True, 
+                                vocab=active["vocab"]
+                            )
                             a_res = predict_hierarchical(
                                 user_text,
                                 active["aspect_model"],
                                 polarity_models=active.get("polarity_models", {}),
                                 binarizer=active["aspect_binarizer"],
-                                use_bert=True
+                                use_lstm=True,
+                                vocab=active["vocab"]
                             )
                         else:
                             s_res = predict_sentiment(
                                 user_text,
                                 active["sentiment_model"],
                                 vectorizer=active["sentiment_vectorizer"],
-                                use_bert=False
+                                use_lstm=False
                             )
                             a_res = predict_hierarchical(
                                 user_text,
@@ -1538,7 +1703,7 @@ if st is not None:
                                 polarity_models=active.get("polarity_models", {}),
                                 vectorizer=active["aspect_vectorizer"],
                                 binarizer=active["aspect_binarizer"],
-                                use_bert=False
+                                use_lstm=False
                             )
                 except Exception as e:
                     st.error(f"Inference Error: {str(e)}")
@@ -1598,99 +1763,47 @@ if st is not None:
                             bg_color = item.get("bg_color", "#ECFDF5" if pol == "Positive" else "#FEF2F2")
                             asp_html += (
                                 f'<div class="aspect-row">'
-                                f'  <span class="aspect-name">🏷️ {asp}</span>'
-                                f'  <span class="aspect-pill" style="color: {color}; background-color: {bg_color}; border: 1px solid {color}44;">'
-                                f'    {icon} {pol} <span style="font-size: 0.78rem; opacity: 0.85;">({conf:.1f}%)</span>'
-                                f'  </span>'
+                                f'<div class="aspect-name">{asp}</div>'
+                                f'<div class="aspect-pill" style="color: {color}; background-color: {bg_color};">'
+                                f'{icon} {pol} ({conf:.0f}%)</div>'
                                 f'</div>'
                             )
                         st.markdown(asp_html, unsafe_allow_html=True)
                     else:
-                        st.markdown("<em>No specific aspect detected.</em>", unsafe_allow_html=True)
+                        st.info("No specific product aspects detected in this review.")
 
                     st.markdown("</div></div>", unsafe_allow_html=True)
 
-                with st.expander("🔍 Cleaned Tokens"):
-                    st.code(cleaned, language="text")
-
-    # 2. BENCHMARKS & DATA INSIGHTS
+    # 2. BENCHMARKS
     elif view_mode == "📈 Benchmarks & Data Insights":
-        st.markdown('<div class="main-header">Model Performance & Empirical Benchmarks</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub-header">Evaluation on held-out 20% test sets (Stratified ABSA splits).</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">Model Benchmarks & Insights</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">Evaluation metrics across TF-IDF and LSTM pipelines</div>', unsafe_allow_html=True)
 
         if not comparison_df.empty:
-            st.subheader("1. Comprehensive Model Benchmark Summary")
-            st.dataframe(comparison_df, width="stretch")
-        else:
-            st.info("Run `python train_models.py` to generate the benchmark table.")
+            st.dataframe(
+                comparison_df,
+                use_container_width=True,
+                column_config={
+                    "Accuracy": st.column_config.NumberColumn(format="%.4f"),
+                    "Macro F1": st.column_config.NumberColumn(format="%.4f"),
+                    "Weighted F1": st.column_config.NumberColumn(format="%.4f"),
+                }
+            )
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Confusion Matrices
-        st.subheader("2. Sentiment Confusion Matrices")
-        c_m1, c_m2 = st.columns(2)
-        with c_m1:
-            st.markdown("**TF-IDF Confusion Matrix**")
-            p_tf = RESULTS_DIR / "sentiment_tfidf.png"
-            if p_tf.exists():
-                st.image(str(p_tf), width="stretch")
-        with c_m2:
-            st.markdown("**BanglaBERT Confusion Matrix**")
-            p_bt = RESULTS_DIR / "sentiment_bert.png"
-            if p_bt.exists():
-                st.image(str(p_bt), width="stretch")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Dataset Distribution
-        st.subheader("3. Dataset Distribution & Explorer")
-        d1, d2 = st.columns([1, 1.3])
-
-        if not dataset_df.empty and "sentiment" in dataset_df.columns:
-            with d1:
-                sent_counts = dataset_df["sentiment"].value_counts().reset_index()
-                sent_counts.columns = ["Sentiment", "Count"]
-                if px is not None:
-                    fig_p = px.pie(
-                        sent_counts, names="Sentiment", values="Count", hole=0.4,
-                        color="Sentiment",
-                        color_discrete_map={"Positive": "#10B981", "Negative": "#EF4444", "Neutral": "#F59E0B"}
+            if px is not None:
+                st.markdown("---")
+                st.subheader("Performance Comparison (F1 Score)")
+                
+                chart_df = comparison_df[comparison_df["Task"].isin(["Sentiment Analysis", "Aspect Detection"])]
+                if not chart_df.empty:
+                    fig = px.bar(
+                        chart_df, x="Task", y="Macro F1", color="Model", barmode="group",
+                        color_discrete_sequence=["#3B82F6", "#10B981"]
                     )
-                    fig_p.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10))
-                    st.plotly_chart(fig_p, width="stretch")
-                else:
-                    st.write(sent_counts)
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Benchmark results not found. Please run the training pipeline first.")
 
-            with d2:
-                aspect_items = []
-                for item in dataset_df["aspects_str"].dropna():
-                    for a in str(item).split(";"):
-                        if a.strip():
-                            aspect_items.append(a.strip())
-                asp_s = pd.Series(aspect_items).value_counts().reset_index()
-                asp_s.columns = ["Aspect", "Mentions"]
-                if px is not None:
-                    fig_b = px.bar(asp_s, x="Mentions", y="Aspect", orientation="h", color="Mentions", color_continuous_scale="Blues")
-                    fig_b.update_layout(yaxis=dict(autorange="reversed"), height=300, margin=dict(t=10, b=10, l=10, r=10))
-                    st.plotly_chart(fig_b, width="stretch")
-                else:
-                    st.write(asp_s)
-
-        if not dataset_df.empty:
-            st.dataframe(dataset_df[["cleaned_text", "sentiment", "aspects_str"]].head(10).rename(columns={
-                "cleaned_text": "Review (Bangla)",
-                "sentiment": "Sentiment",
-                "aspects_str": "Aspects"
-            }), width="stretch")
-
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "<div style='text-align: center; color: #9CA3AF; font-size: 0.85rem;'>"
-        "Bangla Daraz Review Analytics • Hierarchical Aspect-Based Sentiment Analysis (ABSA)"
-        "</div>",
-        unsafe_allow_html=True
-    )
 ```
 
 ---
