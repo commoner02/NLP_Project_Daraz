@@ -191,7 +191,7 @@ def main() -> None:
 
     elapsed = time.time() - start_time
     print("\n" + "=" * 65)
-    print(f"       ✅ TRAINING PIPELINE COMPLETED IN {elapsed:.1f}s!      ")
+    print(f"       TRAINING PIPELINE COMPLETED IN {elapsed:.1f}s!      ")
     print("=" * 65)
 
 

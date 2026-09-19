@@ -420,15 +420,15 @@ def predict_hierarchical(
             is_low = False
 
         if is_low:
-            icon = "⚠️"
+            icon = ""
             color = "#D97706"
             bg_color = "#FFFBEB"
         elif pol_lbl == "Positive":
-            icon = "✅"
+            icon = ""
             color = "#10B981"
             bg_color = "#ECFDF5"
         else:
-            icon = "😡"
+            icon = ""
             color = "#EF4444"
             bg_color = "#FEF2F2"
 

@@ -76,15 +76,21 @@ def load_benchmarks():
     return pd.DataFrame()
 
 
-# Only execute Streamlit UI flow when running within Streamlit
 if st is not None:
     # Page Configuration
     st.set_page_config(
-        page_title="Bangla Daraz ABSA Analytics",
-        page_icon="🛒",
-        layout="wide",
-        initial_sidebar_state="expanded",
+        page_title="Daraz ABSA Analytics",
+        layout="centered",
+        initial_sidebar_state="collapsed",
     )
+
+    # State init
+    if "user_text" not in st.session_state:
+        st.session_state.user_text = ""
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = "TF-IDF"
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = None
 
     # Custom Styling
     st.markdown("""
@@ -96,34 +102,22 @@ if st is not None:
         }
         
         .main-header { 
-            font-size: 2.4rem; 
+            font-size: 2.2rem; 
             font-weight: 800; 
-            background: -webkit-linear-gradient(45deg, #1E3A8A, #3B82F6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            color: #1E293B;
             margin-bottom: 0.2rem; 
         }
-        .sub-header { 
-            font-size: 1.1rem; 
-            color: #64748B; 
-            margin-bottom: 1.8rem; 
-            font-weight: 500;
-        }
+        
         .kpi-card {
             background-color: #FFFFFF;
             border-radius: 12px;
             padding: 20px 24px;
             border: 1px solid #E2E8F0;
-            border-top: 5px solid #3B82F6;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-            transition: all 0.3s ease;
+            margin-bottom: 20px;
         }
-        .kpi-card:hover {
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-            transform: translateY(-2px);
-        }
-        .kpi-title { font-size: 0.85rem; font-weight: 600; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; }
-        .kpi-value { font-size: 1.8rem; font-weight: 700; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+        .kpi-title { font-size: 0.95rem; font-weight: 600; color: #475569; margin-bottom: 12px; border-bottom: 1px solid #E2E8F0; padding-bottom: 8px;}
+        .kpi-value { font-size: 1.6rem; font-weight: 700; color: #1E293B; display: flex; align-items: center; gap: 8px; }
         
         .sentiment-pos { color: #059669; }
         .sentiment-neg { color: #DC2626; }
@@ -138,202 +132,39 @@ if st is not None:
             display: flex;
             justify-content: space-between;
             align-items: center;
-            transition: all 0.2s ease;
-        }
-        .aspect-row:hover {
-            background-color: #FFFFFF;
-            border-color: #CBD5E1;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-            transform: translateX(4px);
         }
         .aspect-name { font-weight: 600; color: #334155; font-size: 0.95rem; }
         .aspect-pill { 
             font-weight: 600; 
             font-size: 0.85rem; 
             padding: 6px 12px; 
-            border-radius: 999px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
+            border-radius: 6px;
         }
     </style>
     """, unsafe_allow_html=True)
 
     load_models_cached = st.cache_resource(load_all_models)
-    load_data_cached = st.cache_data(load_dataset)
     load_benchmarks_cached = st.cache_data(load_benchmarks)
 
     models_data = load_models_cached()
-    dataset_df = load_data_cached()
     comparison_df = load_benchmarks_cached()
 
-    # Sidebar
-    st.sidebar.markdown("<h2>✨ Daraz ABSA</h2>", unsafe_allow_html=True)
-    st.sidebar.markdown("<div style='color: #64748B; font-weight: 500; margin-top: -10px; margin-bottom: 20px;'>Sentiment & Aspect NLP Platform</div>", unsafe_allow_html=True)
+    st.markdown('<div class="main-header">Daraz Review Analyzer</div>', unsafe_allow_html=True)
+    st.markdown("---")
 
-    view_mode = st.sidebar.radio(
-        "Navigation",
-        ["🔍 Review Analyzer", "📈 Benchmarks & Data Insights"]
-    )
+    tab_dash, tab_settings = st.tabs(["Dashboard", "Settings"])
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Model Pipeline")
-    selected_model = st.sidebar.radio(
-        "Select Model Architecture:",
-        ["TF-IDF", "LSTM"],
-        help="Toggle between TF-IDF (N-gram Union) and LSTM representations."
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.info(
-        f"**Corpus**: Mendeley Bangla Daraz ABSA\n\n"
-        f"**Total Reviews**: {len(dataset_df):,} rows\n\n"
-        f"**Aspects**: 5 Dimensions\n(Quality, Price, Delivery, Packaging, Seller)"
-    )
-
-    # 1. REVIEW ANALYZER
-    if view_mode == "🔍 Review Analyzer":
-        st.markdown('<div class="main-header">Bangla Review Sentiment & Aspect Analyzer</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="sub-header">Hierarchical ABSA live inference via <b>{selected_model}</b> pipeline.</div>', unsafe_allow_html=True)
-
-        if models_data["status"] != "ready":
-            st.error(f"Models missing: {models_data.get('message')}. Please run `python train_models.py` first.")
-            st.stop()
-
-        use_lstm = (selected_model == "LSTM")
-        active = models_data["lstm"] if use_lstm else models_data["tfidf"]
-
-        presets = {
-            "— choose sample preset —": "",
-            "Positive Quality & Fast Delivery": "প্রোডাক্ট খুব ভালো ছিল, ডেলিভারিও দ্রুত পেয়েছি। ধন্যবাদ।",
-            "Negative Delay & Poor Quality": "ডেলিভারি অনেক দেরি হয়েছে, প্রোডাক্টও বাজে কোয়ালিটি।",
-            "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
-            "Negation Test (Poor Battery, Good Sound)": "সাউন্ড কোয়ালিটি ভালো কিন্তু ব্যাটারি ভালো না একদমই।",
-            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।"
-        }
-
-        selected_preset = st.selectbox("💡 Quick Test Presets:", list(presets.keys()))
-        default_text = presets.get(selected_preset or "", "")
-
-        user_text = st.text_area(
-            "Enter Bangla Review Text:",
-            value=default_text,
-            height=95,
-            placeholder="দারাজ রিভিউ এখানে লিখুন... (e.g. প্রোডাক্ট ভালো ছিলো কিন্তু ডেলিভারি দেরি হয়েছে)"
+    with tab_settings:
+        st.subheader("Model Configuration")
+        st.radio(
+            "Select Model Architecture:",
+            ["TF-IDF", "LSTM"],
+            key="selected_model",
+            help="Toggle between TF-IDF (N-gram Union) and LSTM representations."
         )
 
-        if st.button("🚀 Analyze Review", type="primary"):
-            if not user_text.strip():
-                st.warning("Please enter some text before analyzing.")
-            else:
-                try:
-                    with st.spinner(f"Analyzing with {selected_model}..."):
-                        cleaned = clean_text(user_text)
-
-                        if use_lstm:
-                            s_res = predict_sentiment(
-                                user_text, 
-                                active["sentiment_model"], 
-                                use_lstm=True, 
-                                vocab=active["vocab"]
-                            )
-                            a_res = predict_hierarchical(
-                                user_text,
-                                active["aspect_model"],
-                                polarity_models=active.get("polarity_models", {}),
-                                binarizer=active["aspect_binarizer"],
-                                use_lstm=True,
-                                vocab=active["vocab"]
-                            )
-                        else:
-                            s_res = predict_sentiment(
-                                user_text,
-                                active["sentiment_model"],
-                                vectorizer=active["sentiment_vectorizer"],
-                                use_lstm=False
-                            )
-                            a_res = predict_hierarchical(
-                                user_text,
-                                active["aspect_model"],
-                                polarity_models=active.get("polarity_models", {}),
-                                vectorizer=active["aspect_vectorizer"],
-                                binarizer=active["aspect_binarizer"],
-                                use_lstm=False
-                            )
-                except Exception as e:
-                    st.error(f"Inference Error: {str(e)}")
-                    st.stop()
-
-                st.markdown("---")
-                st.subheader("NLP Prediction Results")
-
-                c1, c2 = st.columns([1, 1.2])
-
-                # Sentiment Box
-                with c1:
-                    s_lbl = s_res["sentiment"]
-                    s_cls = "sentiment-pos" if s_lbl == "Positive" else ("sentiment-neg" if s_lbl == "Negative" else "sentiment-neu")
-                    s_ico = "😊" if s_lbl == "Positive" else ("😡" if s_lbl == "Negative" else "😐")
-
-                    st.markdown(f"""
-                    <div class="kpi-card">
-                        <div class="kpi-title">Overall Predicted Sentiment</div>
-                        <div class="kpi-value {s_cls}">{s_ico} {s_lbl}</div>
-                        <div style="font-size: 0.85rem; color: #64748B; margin-top: 4px;">Confidence: {s_res['confidence']*100:.1f}%</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    if s_res["probabilities"]:
-                        prob_df = pd.DataFrame(list(s_res["probabilities"].items()), columns=["Sentiment", "Probability"])
-                        prob_df["Percentage"] = prob_df["Probability"] * 100
-                        if px is not None:
-                            fig_s = px.bar(
-                                prob_df, x="Percentage", y="Sentiment", orientation="h",
-                                color="Sentiment",
-                                color_discrete_map={"Positive": "#10B981", "Negative": "#EF4444", "Neutral": "#F59E0B"},
-                                text=prob_df["Percentage"].apply(lambda p: f"{p:.1f}%")
-                            )
-                            fig_s.update_layout(height=160, margin=dict(t=8, b=8, l=8, r=8), showlegend=False, xaxis=dict(range=[0, 100]))
-                            st.plotly_chart(fig_s, width="stretch")
-                        else:
-                            st.bar_chart(prob_df.set_index("Sentiment")["Percentage"])
-
-                # Aspect Box
-                with c2:
-                    st.markdown("""
-                    <div class="kpi-card">
-                        <div class="kpi-title">Detected Aspects & Polarities</div>
-                        <div style="margin-top: 10px;">
-                    """, unsafe_allow_html=True)
-
-                    aspect_details = a_res.get("aspect_details", [])
-                    if aspect_details:
-                        asp_html = ""
-                        for item in aspect_details:
-                            asp = item["aspect"]
-                            pol = item["polarity"]
-                            icon = item["icon"]
-                            conf = item["confidence"] * 100
-                            color = item["color"]
-                            bg_color = item.get("bg_color", "#ECFDF5" if pol == "Positive" else "#FEF2F2")
-                            asp_html += (
-                                f'<div class="aspect-row">'
-                                f'<div class="aspect-name">{asp}</div>'
-                                f'<div class="aspect-pill" style="color: {color}; background-color: {bg_color};">'
-                                f'{icon} {pol} ({conf:.0f}%)</div>'
-                                f'</div>'
-                            )
-                        st.markdown(asp_html, unsafe_allow_html=True)
-                    else:
-                        st.info("No specific product aspects detected in this review.")
-
-                    st.markdown("</div></div>", unsafe_allow_html=True)
-
-    # 2. BENCHMARKS
-    elif view_mode == "📈 Benchmarks & Data Insights":
-        st.markdown('<div class="main-header">Model Benchmarks & Insights</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub-header">Evaluation metrics across TF-IDF and LSTM pipelines</div>', unsafe_allow_html=True)
-
+        st.markdown("---")
+        st.subheader("Model Benchmarks & Insights")
         if not comparison_df.empty:
             st.dataframe(
                 comparison_df,
@@ -347,8 +178,7 @@ if st is not None:
 
             if px is not None:
                 st.markdown("---")
-                st.subheader("Performance Comparison (F1 Score)")
-                
+                st.write("**Performance Comparison (F1 Score)**")
                 chart_df = comparison_df[comparison_df["Task"].isin(["Sentiment Analysis", "Aspect Detection"])]
                 if not chart_df.empty:
                     fig = px.bar(
@@ -358,3 +188,152 @@ if st is not None:
                     st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Benchmark results not found. Please run the training pipeline first.")
+
+    with tab_dash:
+        if models_data["status"] != "ready":
+            st.error(f"Models missing: {models_data.get('message')}. Please run `python train_models.py` first.")
+            st.stop()
+
+        presets = {
+            "— choose sample preset —": "",
+            "Positive Quality & Fast Delivery": "প্রোডাক্ট খুব ভালো ছিল, ডেলিভারিও দ্রুত পেয়েছি। ধন্যবাদ।",
+            "Negative Delay & Poor Quality": "ডেলিভারি অনেক দেরি হয়েছে, প্রোডাক্টও বাজে কোয়ালিটি।",
+            "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
+            "Negation Test (Poor Battery, Good Sound)": "সাউন্ড কোয়ালিটি ভালো কিন্তু ব্যাটারি ভালো না একদমই।",
+            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।"
+        }
+
+        # Preset selection logic
+        def apply_preset():
+            if st.session_state.preset_select != "— choose sample preset —":
+                st.session_state.user_text = presets[st.session_state.preset_select]
+                
+        st.selectbox(
+            "Presets", 
+            list(presets.keys()), 
+            key="preset_select", 
+            on_change=apply_preset,
+            label_visibility="collapsed"
+        )
+
+        user_input = st.text_area(
+            "Input",
+            value=st.session_state.user_text,
+            height=120,
+            key="user_text",
+            placeholder="Enter review text here..."
+        )
+
+        c_analyze, c_reset = st.columns([1, 1])
+        with c_analyze:
+            analyze_clicked = st.button("Analyze", type="primary", use_container_width=True)
+        with c_reset:
+            if st.button("Reset", use_container_width=True):
+                st.session_state.user_text = ""
+                st.session_state.preset_select = "— choose sample preset —"
+                st.session_state.analysis_results = None
+                st.rerun()
+
+        if analyze_clicked:
+            if not user_input.strip():
+                st.warning("Please enter some text before analyzing.")
+            else:
+                use_lstm = (st.session_state.selected_model == "LSTM")
+                active = models_data["lstm"] if use_lstm else models_data["tfidf"]
+                try:
+                    with st.spinner(f"Analyzing with {st.session_state.selected_model}..."):
+                        cleaned = clean_text(user_input)
+
+                        if use_lstm:
+                            s_res = predict_sentiment(
+                                user_input, 
+                                active["sentiment_model"], 
+                                use_lstm=True, 
+                                vocab=active["vocab"]
+                            )
+                            a_res = predict_hierarchical(
+                                user_input,
+                                active["aspect_model"],
+                                polarity_models=active.get("polarity_models", {}),
+                                binarizer=active["aspect_binarizer"],
+                                use_lstm=True,
+                                vocab=active["vocab"]
+                            )
+                        else:
+                            s_res = predict_sentiment(
+                                user_input,
+                                active["sentiment_model"],
+                                vectorizer=active["sentiment_vectorizer"],
+                                use_lstm=False
+                            )
+                            a_res = predict_hierarchical(
+                                user_input,
+                                active["aspect_model"],
+                                polarity_models=active.get("polarity_models", {}),
+                                vectorizer=active["aspect_vectorizer"],
+                                binarizer=active["aspect_binarizer"],
+                                use_lstm=False
+                            )
+                        st.session_state.analysis_results = (s_res, a_res)
+                except Exception as e:
+                    st.error(f"Inference Error: {str(e)}")
+
+        if st.session_state.analysis_results is not None:
+            s_res, a_res = st.session_state.analysis_results
+            
+            st.markdown("<br/>", unsafe_allow_html=True)
+            
+            # Overall Sentiment Section
+            s_lbl = s_res["sentiment"]
+            s_cls = "sentiment-pos" if s_lbl == "Positive" else ("sentiment-neg" if s_lbl == "Negative" else "sentiment-neu")
+            
+            st.markdown(f"""
+            <div class="kpi-card">
+                <div class="kpi-title">Overall Sentiment & Confidence</div>
+                <div class="kpi-value {s_cls}">{s_lbl} <span style="font-size: 0.9rem; color: #64748B; font-weight: 500;">({s_res['confidence']*100:.1f}%)</span></div>
+            """, unsafe_allow_html=True)
+            
+            if s_res["probabilities"]:
+                prob_df = pd.DataFrame(list(s_res["probabilities"].items()), columns=["Sentiment", "Probability"])
+                prob_df["Percentage"] = prob_df["Probability"] * 100
+                if px is not None:
+                    fig_s = px.bar(
+                        prob_df, x="Percentage", y="Sentiment", orientation="h",
+                        color="Sentiment",
+                        color_discrete_map={"Positive": "#10B981", "Negative": "#EF4444", "Neutral": "#F59E0B"},
+                        text=prob_df["Percentage"].apply(lambda p: f"{p:.1f}%")
+                    )
+                    fig_s.update_layout(height=120, margin=dict(t=0, b=0, l=0, r=0), showlegend=False, xaxis=dict(range=[0, 100]))
+                    st.plotly_chart(fig_s, use_container_width=True)
+                else:
+                    st.bar_chart(prob_df.set_index("Sentiment")["Percentage"])
+                    
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+            # Aspect Breakdown Section
+            st.markdown("""
+            <div class="kpi-card">
+                <div class="kpi-title">Aspect Breakdown</div>
+            """, unsafe_allow_html=True)
+
+            aspect_details = a_res.get("aspect_details", [])
+            if aspect_details:
+                asp_html = ""
+                for item in aspect_details:
+                    asp = item["aspect"]
+                    pol = item["polarity"]
+                    conf = item["confidence"] * 100
+                    color = item["color"]
+                    bg_color = item.get("bg_color", "#ECFDF5" if pol == "Positive" else "#FEF2F2")
+                    asp_html += (
+                        f'<div class="aspect-row">'
+                        f'<div class="aspect-name">{asp}</div>'
+                        f'<div class="aspect-pill" style="color: {color}; background-color: {bg_color};">'
+                        f'{pol} ({conf:.0f}%)</div>'
+                        f'</div>'
+                    )
+                st.markdown(asp_html, unsafe_allow_html=True)
+            else:
+                st.write("No specific product aspects detected in this review.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
