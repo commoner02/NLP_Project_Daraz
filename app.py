@@ -28,11 +28,11 @@ from src.preprocessing import clean_text
 
 
 def load_all_models():
-    """Load model artifacts for TF-IDF and BanglaBERT pipelines."""
-    loaded = {"status": "ready", "tfidf": {}, "bert": {}}
+    """Load model artifacts for TF-IDF and LSTM pipelines."""
+    loaded = {"status": "ready", "tfidf": {}, "lstm": {}}
     try:
-        s_m_tf, s_v_tf, _ = load_artifacts("sentiment", "tfidf")
-        a_m_tf, a_v_tf, a_b_tf = load_artifacts("issue", "tfidf")
+        s_m_tf, s_v_tf, _, _ = load_artifacts("sentiment", "tfidf")
+        a_m_tf, a_v_tf, a_b_tf, _ = load_artifacts("issue", "tfidf")
         p_models_tf = load_polarity_artifacts("tfidf")
 
         loaded["tfidf"] = {
@@ -44,12 +44,13 @@ def load_all_models():
             "polarity_models": p_models_tf,
         }
 
-        s_m_bt, _, _ = load_artifacts("sentiment", "bert")
-        a_m_bt, _, a_b_bt = load_artifacts("issue", "bert")
-        loaded["bert"] = {
-            "sentiment_model": s_m_bt,
-            "aspect_model": a_m_bt,
-            "aspect_binarizer": a_b_bt or a_b_tf,
+        s_m_lstm, _, _, s_v_lstm = load_artifacts("sentiment", "lstm")
+        a_m_lstm, _, a_b_lstm, _ = load_artifacts("issue", "lstm")
+        loaded["lstm"] = {
+            "sentiment_model": s_m_lstm,
+            "aspect_model": a_m_lstm,
+            "aspect_binarizer": a_b_lstm or a_b_tf,
+            "vocab": s_v_lstm,
             "polarity_models": p_models_tf,
         }
     except Exception as e:
@@ -88,33 +89,73 @@ if st is not None:
     # Custom Styling
     st.markdown("""
     <style>
-        .main-header { font-size: 2.1rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0.2rem; }
-        .sub-header { font-size: 1.0rem; color: #4B5563; margin-bottom: 1.2rem; }
-        .kpi-card {
-            background-color: #F8FAFC;
-            border-radius: 10px;
-            padding: 16px 18px;
-            border-left: 5px solid #3B82F6;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        html, body, [class*="css"] {
+            font-family: 'Inter', sans-serif;
         }
-        .kpi-title { font-size: 0.8rem; font-weight: 600; color: #64748B; text-transform: uppercase; }
-        .kpi-value { font-size: 1.6rem; font-weight: 700; margin-top: 4px; }
-        .sentiment-pos { color: #10B981; }
-        .sentiment-neg { color: #EF4444; }
-        .sentiment-neu { color: #F59E0B; }
-        .aspect-row {
-            margin-bottom: 8px;
-            padding: 10px 14px;
+        
+        .main-header { 
+            font-size: 2.4rem; 
+            font-weight: 800; 
+            background: -webkit-linear-gradient(45deg, #1E3A8A, #3B82F6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.2rem; 
+        }
+        .sub-header { 
+            font-size: 1.1rem; 
+            color: #64748B; 
+            margin-bottom: 1.8rem; 
+            font-weight: 500;
+        }
+        .kpi-card {
             background-color: #FFFFFF;
+            border-radius: 12px;
+            padding: 20px 24px;
+            border: 1px solid #E2E8F0;
+            border-top: 5px solid #3B82F6;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+            transition: all 0.3s ease;
+        }
+        .kpi-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            transform: translateY(-2px);
+        }
+        .kpi-title { font-size: 0.85rem; font-weight: 600; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; }
+        .kpi-value { font-size: 1.8rem; font-weight: 700; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+        
+        .sentiment-pos { color: #059669; }
+        .sentiment-neg { color: #DC2626; }
+        .sentiment-neu { color: #D97706; }
+        
+        .aspect-row {
+            margin-bottom: 10px;
+            padding: 12px 16px;
+            background-color: #F8FAFC;
             border: 1px solid #E2E8F0;
             border-radius: 8px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+            transition: all 0.2s ease;
         }
-        .aspect-name { font-weight: 600; color: #1E293B; font-size: 0.95rem; }
-        .aspect-pill { font-weight: 600; font-size: 0.85rem; padding: 4px 10px; border-radius: 6px; }
+        .aspect-row:hover {
+            background-color: #FFFFFF;
+            border-color: #CBD5E1;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            transform: translateX(4px);
+        }
+        .aspect-name { font-weight: 600; color: #334155; font-size: 0.95rem; }
+        .aspect-pill { 
+            font-weight: 600; 
+            font-size: 0.85rem; 
+            padding: 6px 12px; 
+            border-radius: 999px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -127,8 +168,8 @@ if st is not None:
     comparison_df = load_benchmarks_cached()
 
     # Sidebar
-    st.sidebar.title("🛒 Daraz ABSA")
-    st.sidebar.markdown("**Sentiment & Aspect NLP Platform**")
+    st.sidebar.markdown("<h2>✨ Daraz ABSA</h2>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='color: #64748B; font-weight: 500; margin-top: -10px; margin-bottom: 20px;'>Sentiment & Aspect NLP Platform</div>", unsafe_allow_html=True)
 
     view_mode = st.sidebar.radio(
         "Navigation",
@@ -139,15 +180,15 @@ if st is not None:
     st.sidebar.subheader("Model Pipeline")
     selected_model = st.sidebar.radio(
         "Select Model Architecture:",
-        ["TF-IDF", "BanglaBERT"],
-        help="Toggle between TF-IDF (N-gram Union) and BanglaBERT representations."
+        ["TF-IDF", "LSTM"],
+        help="Toggle between TF-IDF (N-gram Union) and LSTM representations."
     )
 
     st.sidebar.markdown("---")
     st.sidebar.info(
         f"**Corpus**: Mendeley Bangla Daraz ABSA\n\n"
         f"**Total Reviews**: {len(dataset_df):,} rows\n\n"
-        f"**Aspects**: 5 Dimensions (Quality, Price, Delivery, Packaging, Seller)"
+        f"**Aspects**: 5 Dimensions\n(Quality, Price, Delivery, Packaging, Seller)"
     )
 
     # 1. REVIEW ANALYZER
@@ -159,8 +200,8 @@ if st is not None:
             st.error(f"Models missing: {models_data.get('message')}. Please run `python train_models.py` first.")
             st.stop()
 
-        use_bert = (selected_model == "BanglaBERT")
-        active = models_data["bert"] if use_bert else models_data["tfidf"]
+        use_lstm = (selected_model == "LSTM")
+        active = models_data["lstm"] if use_lstm else models_data["tfidf"]
 
         presets = {
             "— choose sample preset —": "",
@@ -168,7 +209,7 @@ if st is not None:
             "Negative Delay & Poor Quality": "ডেলিভারি অনেক দেরি হয়েছে, প্রোডাক্টও বাজে কোয়ালিটি।",
             "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
             "Negation Test (Poor Battery, Good Sound)": "সাউন্ড কোয়ালিটি ভালো কিন্তু ব্যাটারি ভালো না একদমই।",
-            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল。"
+            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।"
         }
 
         selected_preset = st.selectbox("💡 Quick Test Presets:", list(presets.keys()))
@@ -189,21 +230,27 @@ if st is not None:
                     with st.spinner(f"Analyzing with {selected_model}..."):
                         cleaned = clean_text(user_text)
 
-                        if use_bert:
-                            s_res = predict_sentiment(user_text, active["sentiment_model"], use_bert=True)
+                        if use_lstm:
+                            s_res = predict_sentiment(
+                                user_text, 
+                                active["sentiment_model"], 
+                                use_lstm=True, 
+                                vocab=active["vocab"]
+                            )
                             a_res = predict_hierarchical(
                                 user_text,
                                 active["aspect_model"],
                                 polarity_models=active.get("polarity_models", {}),
                                 binarizer=active["aspect_binarizer"],
-                                use_bert=True
+                                use_lstm=True,
+                                vocab=active["vocab"]
                             )
                         else:
                             s_res = predict_sentiment(
                                 user_text,
                                 active["sentiment_model"],
                                 vectorizer=active["sentiment_vectorizer"],
-                                use_bert=False
+                                use_lstm=False
                             )
                             a_res = predict_hierarchical(
                                 user_text,
@@ -211,7 +258,7 @@ if st is not None:
                                 polarity_models=active.get("polarity_models", {}),
                                 vectorizer=active["aspect_vectorizer"],
                                 binarizer=active["aspect_binarizer"],
-                                use_bert=False
+                                use_lstm=False
                             )
                 except Exception as e:
                     st.error(f"Inference Error: {str(e)}")
@@ -271,96 +318,43 @@ if st is not None:
                             bg_color = item.get("bg_color", "#ECFDF5" if pol == "Positive" else "#FEF2F2")
                             asp_html += (
                                 f'<div class="aspect-row">'
-                                f'  <span class="aspect-name">🏷️ {asp}</span>'
-                                f'  <span class="aspect-pill" style="color: {color}; background-color: {bg_color}; border: 1px solid {color}44;">'
-                                f'    {icon} {pol} <span style="font-size: 0.78rem; opacity: 0.85;">({conf:.1f}%)</span>'
-                                f'  </span>'
+                                f'<div class="aspect-name">{asp}</div>'
+                                f'<div class="aspect-pill" style="color: {color}; background-color: {bg_color};">'
+                                f'{icon} {pol} ({conf:.0f}%)</div>'
                                 f'</div>'
                             )
                         st.markdown(asp_html, unsafe_allow_html=True)
                     else:
-                        st.markdown("<em>No specific aspect detected.</em>", unsafe_allow_html=True)
+                        st.info("No specific product aspects detected in this review.")
 
                     st.markdown("</div></div>", unsafe_allow_html=True)
 
-                with st.expander("🔍 Cleaned Tokens"):
-                    st.code(cleaned, language="text")
-
-    # 2. BENCHMARKS & DATA INSIGHTS
+    # 2. BENCHMARKS
     elif view_mode == "📈 Benchmarks & Data Insights":
-        st.markdown('<div class="main-header">Model Performance & Empirical Benchmarks</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub-header">Evaluation on held-out 20% test sets (Stratified ABSA splits).</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">Model Benchmarks & Insights</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sub-header">Evaluation metrics across TF-IDF and LSTM pipelines</div>', unsafe_allow_html=True)
 
         if not comparison_df.empty:
-            st.subheader("1. Comprehensive Model Benchmark Summary")
-            st.dataframe(comparison_df, width="stretch")
-        else:
-            st.info("Run `python train_models.py` to generate the benchmark table.")
+            st.dataframe(
+                comparison_df,
+                use_container_width=True,
+                column_config={
+                    "Accuracy": st.column_config.NumberColumn(format="%.4f"),
+                    "Macro F1": st.column_config.NumberColumn(format="%.4f"),
+                    "Weighted F1": st.column_config.NumberColumn(format="%.4f"),
+                }
+            )
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Confusion Matrices
-        st.subheader("2. Sentiment Confusion Matrices")
-        c_m1, c_m2 = st.columns(2)
-        with c_m1:
-            st.markdown("**TF-IDF Confusion Matrix**")
-            p_tf = RESULTS_DIR / "sentiment_tfidf.png"
-            if p_tf.exists():
-                st.image(str(p_tf), width="stretch")
-        with c_m2:
-            st.markdown("**BanglaBERT Confusion Matrix**")
-            p_bt = RESULTS_DIR / "sentiment_bert.png"
-            if p_bt.exists():
-                st.image(str(p_bt), width="stretch")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Dataset Distribution
-        st.subheader("3. Dataset Distribution & Explorer")
-        d1, d2 = st.columns([1, 1.3])
-
-        if not dataset_df.empty and "sentiment" in dataset_df.columns:
-            with d1:
-                sent_counts = dataset_df["sentiment"].value_counts().reset_index()
-                sent_counts.columns = ["Sentiment", "Count"]
-                if px is not None:
-                    fig_p = px.pie(
-                        sent_counts, names="Sentiment", values="Count", hole=0.4,
-                        color="Sentiment",
-                        color_discrete_map={"Positive": "#10B981", "Negative": "#EF4444", "Neutral": "#F59E0B"}
+            if px is not None:
+                st.markdown("---")
+                st.subheader("Performance Comparison (F1 Score)")
+                
+                chart_df = comparison_df[comparison_df["Task"].isin(["Sentiment Analysis", "Aspect Detection"])]
+                if not chart_df.empty:
+                    fig = px.bar(
+                        chart_df, x="Task", y="Macro F1", color="Model", barmode="group",
+                        color_discrete_sequence=["#3B82F6", "#10B981"]
                     )
-                    fig_p.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10))
-                    st.plotly_chart(fig_p, width="stretch")
-                else:
-                    st.write(sent_counts)
-
-            with d2:
-                aspect_items = []
-                for item in dataset_df["aspects_str"].dropna():
-                    for a in str(item).split(";"):
-                        if a.strip():
-                            aspect_items.append(a.strip())
-                asp_s = pd.Series(aspect_items).value_counts().reset_index()
-                asp_s.columns = ["Aspect", "Mentions"]
-                if px is not None:
-                    fig_b = px.bar(asp_s, x="Mentions", y="Aspect", orientation="h", color="Mentions", color_continuous_scale="Blues")
-                    fig_b.update_layout(yaxis=dict(autorange="reversed"), height=300, margin=dict(t=10, b=10, l=10, r=10))
-                    st.plotly_chart(fig_b, width="stretch")
-                else:
-                    st.write(asp_s)
-
-        if not dataset_df.empty:
-            st.dataframe(dataset_df[["cleaned_text", "sentiment", "aspects_str"]].head(10).rename(columns={
-                "cleaned_text": "Review (Bangla)",
-                "sentiment": "Sentiment",
-                "aspects_str": "Aspects"
-            }), width="stretch")
-
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "<div style='text-align: center; color: #9CA3AF; font-size: 0.85rem;'>"
-        "Bangla Daraz Review Analytics • Hierarchical Aspect-Based Sentiment Analysis (ABSA)"
-        "</div>",
-        unsafe_allow_html=True
-    )
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Benchmark results not found. Please run the training pipeline first.")

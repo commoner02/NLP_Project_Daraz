@@ -6,7 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
 MODELS_TFIDF = MODELS_DIR / "tfidf"
-MODELS_BERT = MODELS_DIR / "bert"
+MODELS_LSTM = MODELS_DIR / "lstm"
 MODELS_CACHE = MODELS_DIR / "cache"
 RESULTS_DIR = BASE_DIR / "results"
 
@@ -33,10 +33,15 @@ ASPECT_MAPPING = {
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
-# BanglaBERT settings
-BERT_MODEL_NAME = "sagorsarker/bangla-bert-base"
-BERT_BATCH_SIZE = 32
-BERT_MAX_LENGTH = 128
+# LSTM settings
+LSTM_VOCAB_SIZE = 15000
+LSTM_EMBED_DIM = 300
+LSTM_HIDDEN_DIM = 128
+LSTM_NUM_LAYERS = 2
+LSTM_BATCH_SIZE = 32
+LSTM_MAX_LENGTH = 128
+LSTM_EPOCHS = 10
+LSTM_LR = 1e-3
 
 # TF-IDF settings
 TFIDF_WORD_NGRAMS = (1, 2)
@@ -47,5 +52,5 @@ TFIDF_MAX_DF = 0.95
 
 def ensure_dirs() -> None:
     """Create required project directories if missing."""
-    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_BERT, MODELS_CACHE, RESULTS_DIR]:
+    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_LSTM, MODELS_CACHE, RESULTS_DIR]:
         os.makedirs(directory, exist_ok=True)
