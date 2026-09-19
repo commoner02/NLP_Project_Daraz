@@ -18,8 +18,9 @@
    - [`src/embeddings.py`](#45-srcembeddingspy)
    - [`src/models.py`](#46-srcmodelspy)
    - [`src/evaluation.py`](#47-srcevaluationpy)
-5. [Orchestration & Training Pipeline](#-5-orchestration--training-pipeline)
+5. [Orchestration & Training Pipelines](#-5-orchestration--training-pipelines)
    - [`train_models.py`](#51-train_modelspy)
+   - [`pipeline.ipynb`](#52-pipelineipynb)
 6. [Interactive Web Dashboard](#-6-interactive-web-dashboard)
    - [`app.py`](#61-apppy)
 7. [Benchmark Comparison & Empirical Results](#-7-benchmark-comparison--empirical-results)
@@ -133,6 +134,7 @@ NLP_Project/
     │
     ├── app.py                         # Interactive Streamlit analytics dashboard
     ├── train_models.py                # End-to-end training & benchmarking script
+    ├── pipeline.ipynb                 # Interactive end-to-end Jupyter notebook
     ├── requirements.txt               # Dependencies with CPU PyTorch index
     ├── .gitignore                     # Git tracking exclusions
     ├── PROJECT_CODEBASE.md            # Comprehensive project documentation
@@ -1305,6 +1307,17 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 ```
+
+### 5.2 `pipeline.ipynb`
+Interactive Jupyter notebook covering the complete workflow in 8 self-contained steps:
+1. **Environment Setup & Modular Imports**: Configures paths, imports `src/` modules, and verifies directories.
+2. **Bangla Text Preprocessing Demo**: Tests Unicode NFC normalization and negation retention (`"ব্যাটারি ভালো না"`).
+3. **Dataset Loading & Exploratory Data Analysis**: Visualizes sentiment class balance and aspect mention frequencies with Seaborn.
+4. **Train/Test Splitting**: Stratified 80/20 train/test data splits for sentiment and aspects.
+5. **Model Family 1: TF-IDF**: Word + Character n-grams for sentiment, 5-aspect multi-label classification, and 5 dedicated aspect polarities.
+6. **Model Family 2: Pretrained BanglaBERT**: Mean-pooled 768-dim embeddings from `sagorsarker/bangla-bert-base` with classification heads.
+7. **Comparative Benchmark Summary**: Generates the 9-row evaluation table and saves `model_comparison.csv` and `metrics_summary.json`.
+8. **Live Hierarchical Inference Demo**: Tests challenging multi-aspect reviews and prints structured predictions with confidence scores and emoji badges.
 
 ---
 
