@@ -7,7 +7,6 @@ DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "models"
 MODELS_TFIDF = MODELS_DIR / "tfidf"
 MODELS_LSTM = MODELS_DIR / "lstm"
-MODELS_CACHE = MODELS_DIR / "cache"
 RESULTS_DIR = BASE_DIR / "results"
 
 # Tasks & Aspects
@@ -16,7 +15,7 @@ ALL_ASPECTS = [
     "Price",
     "Delivery",
     "Packaging",
-    "Seller Service"
+    "Seller Service",
 ]
 
 SENTIMENT_LABELS = ["Negative", "Neutral", "Positive"]
@@ -26,14 +25,14 @@ ASPECT_MAPPING = {
     "price": "Price",
     "delivery": "Delivery",
     "packaging": "Packaging",
-    "seller_service": "Seller Service"
+    "seller_service": "Seller Service",
 }
 
 # Hyperparameters
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
-# LSTM settings
+# BiLSTM settings
 LSTM_VOCAB_SIZE = 15000
 LSTM_EMBED_DIM = 300
 LSTM_HIDDEN_DIM = 128
@@ -52,5 +51,5 @@ TFIDF_MAX_DF = 0.95
 
 def ensure_dirs() -> None:
     """Create required project directories if missing."""
-    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_LSTM, MODELS_CACHE, RESULTS_DIR]:
+    for directory in [DATA_DIR, MODELS_TFIDF, MODELS_LSTM, RESULTS_DIR]:
         os.makedirs(directory, exist_ok=True)

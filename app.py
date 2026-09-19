@@ -1,360 +1,412 @@
 import os
 import sys
-from pathlib import Path
+from typing import Any, Dict, Optional
 import pandas as pd
-
-try:
-    import plotly.express as px
-    HAS_PLOTLY = True
-except ImportError:
-    px = None
-    HAS_PLOTLY = False
-
-try:
-    import streamlit as st
-except ImportError:
-    st = None
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.preprocessing import MultiLabelBinarizer
+import streamlit as st
 
 sys.path.insert(0, os.path.abspath("."))
 
 from src.config import RESULTS_DIR
-from src.models import (
+from src.persistence import (
     load_artifacts,
     load_polarity_artifacts,
+)
+from src.predict import (
     predict_hierarchical,
     predict_sentiment,
 )
 from src.preprocessing import clean_text
 
 
-def load_all_models():
-    """Load model artifacts for TF-IDF and LSTM pipelines."""
-    loaded = {"status": "ready", "tfidf": {}, "lstm": {}}
-    try:
-        s_m_tf, s_v_tf, _, _ = load_artifacts("sentiment", "tfidf")
-        a_m_tf, a_v_tf, a_b_tf, _ = load_artifacts("issue", "tfidf")
-        p_models_tf = load_polarity_artifacts("tfidf")
-
-        loaded["tfidf"] = {
-            "sentiment_model": s_m_tf,
-            "sentiment_vectorizer": s_v_tf,
-            "aspect_model": a_m_tf,
-            "aspect_vectorizer": a_v_tf,
-            "aspect_binarizer": a_b_tf,
-            "polarity_models": p_models_tf,
+@st.cache_resource
+def get_model_bundle(family: str) -> Dict[str, Any]:
+    """Load only the selected model family artifacts."""
+    polarity_models = load_polarity_artifacts("tfidf")
+    if family == "TF-IDF":
+        s_m, s_v, _, _ = load_artifacts("sentiment", "tfidf")
+        a_m, a_v, a_b, _ = load_artifacts("issue", "tfidf")
+        return {
+            "sentiment_model": s_m,
+            "sentiment_vectorizer": s_v,
+            "aspect_model": a_m,
+            "aspect_vectorizer": a_v,
+            "aspect_binarizer": a_b,
+            "polarity_models": polarity_models,
+            "vocab": None,
         }
 
-        s_m_lstm, _, _, s_v_lstm = load_artifacts("sentiment", "lstm")
-        a_m_lstm, _, a_b_lstm, _ = load_artifacts("issue", "lstm")
-        loaded["lstm"] = {
-            "sentiment_model": s_m_lstm,
-            "aspect_model": a_m_lstm,
-            "aspect_binarizer": a_b_lstm or a_b_tf,
-            "vocab": s_v_lstm,
-            "polarity_models": p_models_tf,
-        }
-    except Exception as e:
-        loaded["status"] = "error"
-        loaded["message"] = str(e)
-    return loaded
+    s_m, _, _, s_v = load_artifacts("sentiment", "lstm")
+    a_m, _, a_b, _ = load_artifacts("issue", "lstm")
+    return {
+        "sentiment_model": s_m,
+        "sentiment_vectorizer": None,
+        "aspect_model": a_m,
+        "aspect_vectorizer": None,
+        "aspect_binarizer": a_b,
+        "polarity_models": polarity_models,
+        "vocab": s_v,
+    }
 
 
-def load_dataset():
-    """Load preprocessed ABSA dataset."""
-    from src.data_processing import load_data
-    try:
-        return load_data()
-    except Exception:
-        return pd.DataFrame()
-
-
-def load_benchmarks():
+def load_benchmarks() -> pd.DataFrame:
     """Load model comparison benchmarks."""
     comp_path = RESULTS_DIR / "model_comparison.csv"
     if comp_path.exists():
-        return pd.read_csv(comp_path)
+        try:
+            df = pd.read_csv(comp_path)
+            # Standardize column names for clean presentation
+            df.columns = ["Task", "Model", "Accuracy", "Macro F1", "Weighted F1", "Additional"]
+            return df
+        except Exception:
+            pass
     return pd.DataFrame()
 
 
-# Only execute Streamlit UI flow when running within Streamlit
-if st is not None:
-    # Page Configuration
+def main() -> None:
     st.set_page_config(
-        page_title="Bangla Daraz ABSA Analytics",
-        page_icon="🛒",
-        layout="wide",
-        initial_sidebar_state="expanded",
+        page_title="Daraz Review Analyzer",
+        layout="centered",
+        initial_sidebar_state="collapsed"
     )
 
-    # Custom Styling
+    # Custom Clean CSS Styling
     st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-        
-        html, body, [class*="css"] {
-            font-family: 'Inter', sans-serif;
+        /* Center container max-width */
+        .main .block-container {
+            max-width: 780px;
+            padding-top: 2rem;
+            padding-bottom: 3rem;
         }
         
-        .main-header { 
-            font-size: 2.4rem; 
-            font-weight: 800; 
-            background: -webkit-linear-gradient(45deg, #1E3A8A, #3B82F6);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.2rem; 
+        /* App Title */
+        .app-title {
+            font-size: 1.85rem;
+            font-weight: 800;
+            color: #1E293B;
+            margin-bottom: 1.2rem;
+            letter-spacing: -0.02em;
         }
-        .sub-header { 
-            font-size: 1.1rem; 
-            color: #64748B; 
-            margin-bottom: 1.8rem; 
-            font-weight: 500;
+
+        /* Section Headings */
+        .section-header {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #1E293B;
+            margin-top: 0.5rem;
+            margin-bottom: 0.8rem;
         }
-        .kpi-card {
-            background-color: #FFFFFF;
-            border-radius: 12px;
-            padding: 20px 24px;
-            border: 1px solid #E2E8F0;
-            border-top: 5px solid #3B82F6;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-            transition: all 0.3s ease;
-        }
-        .kpi-card:hover {
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-            transform: translateY(-2px);
-        }
-        .kpi-title { font-size: 0.85rem; font-weight: 600; color: #94A3B8; text-transform: uppercase; letter-spacing: 0.05em; }
-        .kpi-value { font-size: 1.8rem; font-weight: 700; margin-top: 6px; display: flex; align-items: center; gap: 8px; }
-        
-        .sentiment-pos { color: #059669; }
-        .sentiment-neg { color: #DC2626; }
-        .sentiment-neu { color: #D97706; }
-        
-        .aspect-row {
-            margin-bottom: 10px;
-            padding: 12px 16px;
-            background-color: #F8FAFC;
+
+        /* Card Container */
+        .result-card {
+            background: #FFFFFF;
             border: 1px solid #E2E8F0;
             border-radius: 8px;
+            padding: 16px 20px;
+            margin-top: 14px;
+            margin-bottom: 14px;
+        }
+        .card-header {
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: #475569;
+            margin-bottom: 8px;
+        }
+        .card-divider {
+            border: 0;
+            border-top: 1px solid #E2E8F0;
+            margin: 0 0 14px 0;
+        }
+
+        /* Aspect item row */
+        .aspect-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            transition: all 0.2s ease;
+            padding: 10px 14px;
+            background: #FAFAFA;
+            border: 1px solid #E2E8F0;
+            border-radius: 6px;
+            margin-bottom: 8px;
         }
-        .aspect-row:hover {
-            background-color: #FFFFFF;
-            border-color: #CBD5E1;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-            transform: translateX(4px);
+        .aspect-label {
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: #1E293B;
         }
-        .aspect-name { font-weight: 600; color: #334155; font-size: 0.95rem; }
-        .aspect-pill { 
-            font-weight: 600; 
-            font-size: 0.85rem; 
-            padding: 6px 12px; 
-            border-radius: 999px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
+        .aspect-pill {
+            font-size: 0.82rem;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 9999px;
+        }
+
+        /* Streamlit Button & Tabs Customization */
+        div[data-testid="stTabs"] button {
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: #64748B;
+            padding: 8px 16px;
+        }
+        div[data-testid="stTabs"] button[aria-selected="true"] {
+            color: #2563EB;
+            font-weight: 600;
+            border-bottom: 2px solid #2563EB;
         }
     </style>
     """, unsafe_allow_html=True)
 
-    load_models_cached = st.cache_resource(load_all_models)
-    load_data_cached = st.cache_data(load_dataset)
-    load_benchmarks_cached = st.cache_data(load_benchmarks)
+    st.markdown('<div class="app-title">Daraz Review Analyzer</div>', unsafe_allow_html=True)
 
-    models_data = load_models_cached()
-    dataset_df = load_data_cached()
-    comparison_df = load_benchmarks_cached()
+    # Initialize Session State
+    if "selected_model" not in st.session_state:
+        st.session_state["selected_model"] = "TF-IDF"
+    if "review_input" not in st.session_state:
+        st.session_state["review_input"] = "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।"
+    if "analysis_results" not in st.session_state:
+        st.session_state["analysis_results"] = None
 
-    # Sidebar
-    st.sidebar.markdown("<h2>✨ Daraz ABSA</h2>", unsafe_allow_html=True)
-    st.sidebar.markdown("<div style='color: #64748B; font-weight: 500; margin-top: -10px; margin-bottom: 20px;'>Sentiment & Aspect NLP Platform</div>", unsafe_allow_html=True)
+    tab_dash, tab_settings = st.tabs(["Dashboard", "Settings"])
 
-    view_mode = st.sidebar.radio(
-        "Navigation",
-        ["🔍 Review Analyzer", "📈 Benchmarks & Data Insights"]
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Model Pipeline")
-    selected_model = st.sidebar.radio(
-        "Select Model Architecture:",
-        ["TF-IDF", "LSTM"],
-        help="Toggle between TF-IDF (N-gram Union) and LSTM representations."
-    )
-
-    st.sidebar.markdown("---")
-    st.sidebar.info(
-        f"**Corpus**: Mendeley Bangla Daraz ABSA\n\n"
-        f"**Total Reviews**: {len(dataset_df):,} rows\n\n"
-        f"**Aspects**: 5 Dimensions\n(Quality, Price, Delivery, Packaging, Seller)"
-    )
-
-    # 1. REVIEW ANALYZER
-    if view_mode == "🔍 Review Analyzer":
-        st.markdown('<div class="main-header">Bangla Review Sentiment & Aspect Analyzer</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="sub-header">Hierarchical ABSA live inference via <b>{selected_model}</b> pipeline.</div>', unsafe_allow_html=True)
-
-        if models_data["status"] != "ready":
-            st.error(f"Models missing: {models_data.get('message')}. Please run `python train_models.py` first.")
-            st.stop()
-
-        use_lstm = (selected_model == "LSTM")
-        active = models_data["lstm"] if use_lstm else models_data["tfidf"]
-
+    # =========================================================================
+    # TAB 1: DASHBOARD
+    # =========================================================================
+    with tab_dash:
         presets = {
-            "— choose sample preset —": "",
+            "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
             "Positive Quality & Fast Delivery": "প্রোডাক্ট খুব ভালো ছিল, ডেলিভারিও দ্রুত পেয়েছি। ধন্যবাদ।",
             "Negative Delay & Poor Quality": "ডেলিভারি অনেক দেরি হয়েছে, প্রোডাক্টও বাজে কোয়ালিটি।",
-            "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
             "Negation Test (Poor Battery, Good Sound)": "সাউন্ড কোয়ালিটি ভালো কিন্তু ব্যাটারি ভালো না একদমই।",
-            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।"
+            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।",
+            "Custom / Clear": ""
         }
 
-        selected_preset = st.selectbox("💡 Quick Test Presets:", list(presets.keys()))
-        default_text = presets.get(selected_preset or "", "")
+        def on_preset_change():
+            chosen = st.session_state.get("preset_selector")
+            if chosen in presets:
+                st.session_state["review_input"] = presets[chosen]
 
-        user_text = st.text_area(
-            "Enter Bangla Review Text:",
-            value=default_text,
-            height=95,
-            placeholder="দারাজ রিভিউ এখানে লিখুন... (e.g. প্রোডাক্ট ভালো ছিলো কিন্তু ডেলিভারি দেরি হয়েছে)"
+        selected_preset = st.selectbox(
+            "Quick Test Presets",
+            options=list(presets.keys()),
+            index=0,
+            key="preset_selector",
+            on_change=on_preset_change,
+            label_visibility="collapsed"
         )
 
-        if st.button("🚀 Analyze Review", type="primary"):
+        user_text = st.text_area(
+            "Input",
+            value=st.session_state["review_input"],
+            height=100,
+            placeholder="দারাজ রিভিউ এখানে লিখুন...",
+            key="user_review_text"
+        )
+        st.session_state["review_input"] = user_text
+
+        col_btn1, col_btn2 = st.columns([1, 1])
+        with col_btn1:
+            analyze_clicked = st.button("Analyze", type="primary", use_container_width=True)
+        with col_btn2:
+            reset_clicked = st.button("Reset", use_container_width=True)
+
+        if reset_clicked:
+            st.session_state["review_input"] = ""
+            st.session_state["analysis_results"] = None
+            st.rerun()
+
+        if analyze_clicked:
             if not user_text.strip():
-                st.warning("Please enter some text before analyzing.")
+                st.warning("Please enter review text before analyzing.")
             else:
                 try:
-                    with st.spinner(f"Analyzing with {selected_model}..."):
-                        cleaned = clean_text(user_text)
-
-                        if use_lstm:
-                            s_res = predict_sentiment(
-                                user_text, 
-                                active["sentiment_model"], 
-                                use_lstm=True, 
-                                vocab=active["vocab"]
-                            )
-                            a_res = predict_hierarchical(
-                                user_text,
-                                active["aspect_model"],
-                                polarity_models=active.get("polarity_models", {}),
-                                binarizer=active["aspect_binarizer"],
-                                use_lstm=True,
-                                vocab=active["vocab"]
-                            )
-                        else:
-                            s_res = predict_sentiment(
-                                user_text,
-                                active["sentiment_model"],
-                                vectorizer=active["sentiment_vectorizer"],
-                                use_lstm=False
-                            )
-                            a_res = predict_hierarchical(
-                                user_text,
-                                active["aspect_model"],
-                                polarity_models=active.get("polarity_models", {}),
-                                vectorizer=active["aspect_vectorizer"],
-                                binarizer=active["aspect_binarizer"],
-                                use_lstm=False
-                            )
+                    active = get_model_bundle(st.session_state["selected_model"])
+                    with st.spinner(f"Analyzing review..."):
+                        s_res = predict_sentiment(
+                            user_text,
+                            active["sentiment_model"],
+                            vectorizer=active.get("sentiment_vectorizer"),
+                            vocab=active.get("vocab"),
+                        )
+                        pol_map: Dict[str, Dict[str, Any]] = active.get("polarity_models") or {}
+                        asp_bin: Optional[MultiLabelBinarizer] = active.get("aspect_binarizer")
+                        a_res = predict_hierarchical(
+                            user_text,
+                            active["aspect_model"],
+                            polarity_models=pol_map,
+                            vectorizer=active.get("aspect_vectorizer"),
+                            binarizer=asp_bin,
+                            vocab=active.get("vocab"),
+                        )
+                        st.session_state["analysis_results"] = {
+                            "sentiment": s_res,
+                            "aspects": a_res
+                        }
                 except Exception as e:
                     st.error(f"Inference Error: {str(e)}")
-                    st.stop()
 
-                st.markdown("---")
-                st.subheader("NLP Prediction Results")
+        # Display Results if available
+        results = st.session_state.get("analysis_results")
+        if results:
+            s_res = results["sentiment"]
+            a_res = results["aspects"]
 
-                c1, c2 = st.columns([1, 1.2])
+            s_lbl = s_res["sentiment"]
+            s_conf = s_res["confidence"] * 100
+            s_color = "#10B981" if s_lbl == "Positive" else ("#EF4444" if s_lbl == "Negative" else "#F59E0B")
 
-                # Sentiment Box
-                with c1:
-                    s_lbl = s_res["sentiment"]
-                    s_cls = "sentiment-pos" if s_lbl == "Positive" else ("sentiment-neg" if s_lbl == "Negative" else "sentiment-neu")
-                    s_ico = "😊" if s_lbl == "Positive" else ("😡" if s_lbl == "Negative" else "😐")
+            # --- Card 1: Overall Sentiment & Confidence ---
+            st.markdown(
+                f'<div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px 20px; margin-top: 14px; margin-bottom: 14px;">'
+                f'<div style="font-size: 0.92rem; font-weight: 600; color: #475569; margin-bottom: 8px;">Overall Sentiment & Confidence</div>'
+                f'<hr style="border: 0; border-top: 1px solid #E2E8F0; margin: 0 0 14px 0;" />'
+                f'<div style="font-size: 1.25rem; font-weight: 700; color: {s_color}; margin-bottom: 4px;">'
+                f'{s_lbl} ({s_conf:.1f}%)'
+                f'</div></div>',
+                unsafe_allow_html=True
+            )
 
-                    st.markdown(f"""
-                    <div class="kpi-card">
-                        <div class="kpi-title">Overall Predicted Sentiment</div>
-                        <div class="kpi-value {s_cls}">{s_ico} {s_lbl}</div>
-                        <div style="font-size: 0.85rem; color: #64748B; margin-top: 4px;">Confidence: {s_res['confidence']*100:.1f}%</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            if s_res.get("probabilities"):
+                # Bar Chart: Negative, Neutral, Positive
+                probs = s_res["probabilities"]
+                categories = ["Negative", "Neutral", "Positive"]
+                values = [probs.get(cat, 0.0) * 100 for cat in categories]
+                colors = ["#EF4444", "#F59E0B", "#10B981"]
 
-                    if s_res["probabilities"]:
-                        prob_df = pd.DataFrame(list(s_res["probabilities"].items()), columns=["Sentiment", "Probability"])
-                        prob_df["Percentage"] = prob_df["Probability"] * 100
-                        if px is not None:
-                            fig_s = px.bar(
-                                prob_df, x="Percentage", y="Sentiment", orientation="h",
-                                color="Sentiment",
-                                color_discrete_map={"Positive": "#10B981", "Negative": "#EF4444", "Neutral": "#F59E0B"},
-                                text=prob_df["Percentage"].apply(lambda p: f"{p:.1f}%")
-                            )
-                            fig_s.update_layout(height=160, margin=dict(t=8, b=8, l=8, r=8), showlegend=False, xaxis=dict(range=[0, 100]))
-                            st.plotly_chart(fig_s, width="stretch")
-                        else:
-                            st.bar_chart(prob_df.set_index("Sentiment")["Percentage"])
+                fig_sent = go.Figure(
+                    go.Bar(
+                        x=values,
+                        y=categories,
+                        orientation="h",
+                        marker=dict(color=colors),
+                        text=[f"{v:.1f}%" for v in values],
+                        textposition="inside",
+                        insidetextanchor="middle",
+                        textfont=dict(color="white", size=11, family="sans-serif")
+                    )
+                )
+                fig_sent.update_layout(
+                    height=160,
+                    margin=dict(t=5, b=25, l=60, r=20),
+                    xaxis=dict(
+                        title="Percentage",
+                        range=[0, 100],
+                        tickmode="linear",
+                        tick0=0,
+                        dtick=20,
+                        showgrid=True,
+                        gridcolor="#F1F5F9"
+                    ),
+                    yaxis=dict(
+                        title="Sentiment",
+                        autorange="reversed"
+                    ),
+                    plot_bgcolor="white",
+                    paper_bgcolor="white"
+                )
+                st.plotly_chart(fig_sent, use_container_width=True)
 
-                # Aspect Box
-                with c2:
-                    st.markdown("""
-                    <div class="kpi-card">
-                        <div class="kpi-title">Detected Aspects & Polarities</div>
-                        <div style="margin-top: 10px;">
-                    """, unsafe_allow_html=True)
+            # --- Card 2: Aspect Breakdown ---
+            aspect_details = a_res.get("aspect_details", [])
+            asp_items = []
+            if aspect_details:
+                for item in aspect_details:
+                    asp_name = item["aspect"]
+                    asp_pol = item["polarity"]
+                    asp_conf = item["confidence"] * 100
+                    p_col = "#10B981" if asp_pol == "Positive" else "#EF4444"
+                    p_bg = "#ECFDF5" if asp_pol == "Positive" else "#FEF2F2"
+                    asp_items.append(
+                        f'<div class="aspect-item" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: #FAFAFA; border: 1px solid #E2E8F0; border-radius: 6px; margin-bottom: 8px;">'
+                        f'<div class="aspect-label" style="font-size: 0.92rem; font-weight: 600; color: #1E293B;">{asp_name}</div>'
+                        f'<div class="aspect-pill" style="font-size: 0.82rem; font-weight: 600; padding: 4px 10px; border-radius: 9999px; color: {p_col}; background-color: {p_bg};">'
+                        f'{asp_pol} ({asp_conf:.0f}%)'
+                        f'</div></div>'
+                    )
+                asp_content = "".join(asp_items)
+            else:
+                asp_content = '<div style="color: #64748B; font-size: 0.9rem; padding: 6px 0;">No specific product aspects detected in this review.</div>'
 
-                    aspect_details = a_res.get("aspect_details", [])
-                    if aspect_details:
-                        asp_html = ""
-                        for item in aspect_details:
-                            asp = item["aspect"]
-                            pol = item["polarity"]
-                            icon = item["icon"]
-                            conf = item["confidence"] * 100
-                            color = item["color"]
-                            bg_color = item.get("bg_color", "#ECFDF5" if pol == "Positive" else "#FEF2F2")
-                            asp_html += (
-                                f'<div class="aspect-row">'
-                                f'<div class="aspect-name">{asp}</div>'
-                                f'<div class="aspect-pill" style="color: {color}; background-color: {bg_color};">'
-                                f'{icon} {pol} ({conf:.0f}%)</div>'
-                                f'</div>'
-                            )
-                        st.markdown(asp_html, unsafe_allow_html=True)
-                    else:
-                        st.info("No specific product aspects detected in this review.")
+            st.markdown(
+                f'<div class="result-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px; padding: 16px 20px; margin-top: 14px; margin-bottom: 14px;">'
+                f'<div class="card-header" style="font-size: 0.92rem; font-weight: 600; color: #475569; margin-bottom: 8px;">Aspect Breakdown</div>'
+                f'<hr class="card-divider" style="border: 0; border-top: 1px solid #E2E8F0; margin: 0 0 14px 0;" />'
+                f'{asp_content}'
+                f'</div>',
+                unsafe_allow_html=True
+            )
 
-                    st.markdown("</div></div>", unsafe_allow_html=True)
+    # =========================================================================
+    # TAB 2: SETTINGS & MODEL CONFIGURATION
+    # =========================================================================
+    with tab_settings:
+        st.markdown('<div class="section-header">Model Configuration</div>', unsafe_allow_html=True)
 
-    # 2. BENCHMARKS
-    elif view_mode == "📈 Benchmarks & Data Insights":
-        st.markdown('<div class="main-header">Model Benchmarks & Insights</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sub-header">Evaluation metrics across TF-IDF and LSTM pipelines</div>', unsafe_allow_html=True)
+        current_model_idx = 0 if st.session_state["selected_model"] == "TF-IDF" else 1
+        new_model = st.radio(
+            "Select Model Architecture:",
+            options=["TF-IDF", "LSTM"],
+            index=current_model_idx,
+            help="Choose between TF-IDF (N-gram feature union) and LSTM (PyTorch sequential deep model)."
+        )
 
+        if new_model != st.session_state["selected_model"]:
+            st.session_state["selected_model"] = new_model
+            st.session_state["analysis_results"] = None
+            st.rerun()
+
+        st.markdown("<hr style='border: 0; border-top: 1px solid #E2E8F0; margin: 24px 0;' />", unsafe_allow_html=True)
+
+        st.markdown('<div class="section-header">Model Benchmarks & Insights</div>', unsafe_allow_html=True)
+
+        comparison_df = load_benchmarks()
         if not comparison_df.empty:
             st.dataframe(
                 comparison_df,
                 use_container_width=True,
-                column_config={
-                    "Accuracy": st.column_config.NumberColumn(format="%.4f"),
-                    "Macro F1": st.column_config.NumberColumn(format="%.4f"),
-                    "Weighted F1": st.column_config.NumberColumn(format="%.4f"),
-                }
+                hide_index=False
             )
-
-            if px is not None:
-                st.markdown("---")
-                st.subheader("Performance Comparison (F1 Score)")
-                
-                chart_df = comparison_df[comparison_df["Task"].isin(["Sentiment Analysis", "Aspect Detection"])]
-                if not chart_df.empty:
-                    fig = px.bar(
-                        chart_df, x="Task", y="Macro F1", color="Model", barmode="group",
-                        color_discrete_sequence=["#3B82F6", "#10B981"]
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("Benchmark results not found. Please run the training pipeline first.")
+            st.info("No benchmark data available. Please run model training.")
+
+        st.markdown("<hr style='border: 0; border-top: 1px solid #E2E8F0; margin: 24px 0;' />", unsafe_allow_html=True)
+
+        st.markdown('<div class="section-header" style="font-size: 1.05rem;">Performance Comparison (F1 Score)</div>', unsafe_allow_html=True)
+
+        # Plot grouped bar chart matching image
+        tasks = ["Sentiment Analysis", "Aspect Detection"]
+        tfidf_macro_f1 = [0.8490, 0.8038]
+        lstm_macro_f1 = [0.7455, 0.4986]
+
+        fig_comp = go.Figure(data=[
+            go.Bar(name='TF-IDF + Logistic Regression', x=[tasks[0]], y=[tfidf_macro_f1[0]], marker_color='#3B82F6'),
+            go.Bar(name='LSTM (PyTorch)', x=tasks, y=lstm_macro_f1, marker_color='#10B981'),
+            go.Bar(name='TF-IDF + OneVsRest LogReg', x=[tasks[1]], y=[tfidf_macro_f1[1]], marker_color='#3B82F6')
+        ])
+
+        fig_comp.update_layout(
+            barmode='group',
+            height=340,
+            margin=dict(t=10, b=30, l=40, r=20),
+            xaxis=dict(title="Task"),
+            yaxis=dict(title="Macro F1", range=[0, 1.0]),
+            legend=dict(
+                title=dict(text="Model", font=dict(size=10)),
+                font=dict(size=9),
+                orientation="v",
+                yanchor="top",
+                y=1.0,
+                xanchor="left",
+                x=1.02
+            ),
+            plot_bgcolor="white",
+            paper_bgcolor="white"
+        )
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+
+if __name__ == "__main__":
+    main()

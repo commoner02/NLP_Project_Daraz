@@ -1,12 +1,38 @@
+"""Metrics, confusion matrices, and benchmark CSV/JSON export."""
 import json
 from typing import Any, Dict, List, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns  # type: ignore
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    hamming_loss,
+)
 
-from src.config import RESULTS_DIR
+from src.config import ALL_ASPECTS, RESULTS_DIR
+
+
+def _evaluate(y_true: Any, y_pred: Any, multilabel: bool = False) -> Dict[str, Any]:
+    """Standardized evaluation metrics for single-label and multi-label tasks."""
+    if multilabel:
+        y_pred_arr = np.array(y_pred)
+        return {
+            "hamming_loss": float(hamming_loss(y_true, y_pred_arr)),
+            "micro_f1": float(f1_score(y_true, y_pred_arr, average="micro", zero_division=0)),
+            "macro_f1": float(f1_score(y_true, y_pred_arr, average="macro", zero_division=0)),
+            "weighted_f1": float(f1_score(y_true, y_pred_arr, average="weighted", zero_division=0)),
+            "predictions": y_pred_arr,
+        }
+
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
+        "predictions": y_pred,
+    }
 
 
 def save_confusion_matrix(
@@ -14,7 +40,7 @@ def save_confusion_matrix(
     y_pred: Any,
     labels: List[Any],
     title: str,
-    filename: str
+    filename: str,
 ) -> None:
     """Generate and save Seaborn confusion matrix heatmap."""
     output_path = RESULTS_DIR / filename
@@ -23,8 +49,14 @@ def save_confusion_matrix(
 
     plt.figure(figsize=(7, 6))
     sns.heatmap(
-        cm, annot=True, fmt="d", cmap="Blues",
-        xticklabels=labels, yticklabels=labels, cbar=True, linewidths=0.5
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=labels,
+        yticklabels=labels,
+        cbar=True,
+        linewidths=0.5,
     )
     plt.title(title, fontsize=13, pad=12, fontweight="bold")
     plt.xlabel("Predicted Label", fontsize=11, labelpad=8)
@@ -34,13 +66,9 @@ def save_confusion_matrix(
     plt.close()
 
 
-# Backward-compatible alias
-plot_and_save_confusion_matrix = save_confusion_matrix
-
-
 def save_metrics_summary_json(
     summary_dict: Dict[str, Any],
-    filename: str = "metrics_summary.json"
+    filename: str = "metrics_summary.json",
 ) -> None:
     """Save summary metrics to JSON in results/ with safe type conversion."""
     output_path = RESULTS_DIR / filename
@@ -59,13 +87,9 @@ def save_metrics_summary_json(
         json.dump(summary_dict, f, indent=4, ensure_ascii=False, default=_convert)
 
 
-# Backward-compatible alias
-save_json = save_metrics_summary_json
-
-
 def save_model_comparison_csv(
     data: Union[List[Dict[str, Any]], pd.DataFrame],
-    filename: str = "model_comparison.csv"
+    filename: str = "model_comparison.csv",
 ) -> pd.DataFrame:
     """Save benchmark summary rows to CSV in results/."""
     output_path = RESULTS_DIR / filename

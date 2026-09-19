@@ -1,171 +1,129 @@
-import ast
+"""Data loading and train/test splitting. Single source of truth: `label` column."""
 import re
-from typing import Any, Dict, List, Optional, Tuple
-import numpy as np
+from typing import Dict, List, Optional, Tuple
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from src.config import (
-    ALL_ASPECTS,
-    ASPECT_MAPPING,
-    DATA_DIR,
-    RANDOM_STATE,
-    TEST_SIZE,
-)
+from src.config import ALL_ASPECTS, ASPECT_MAPPING, DATA_DIR, RANDOM_STATE, TEST_SIZE
 from src.preprocessing import clean_text
 
-PROCESSED_FILE = DATA_DIR / "processed_data" / "annotated_bangla.csv"
-ASPECT_MIN_SAMPLES = 20
+import json
+
+RAW_FILE = DATA_DIR / "processed_data" / "annotated_bangla.csv"
+CLEAN_FILE = DATA_DIR / "processed_data" / "clean_annotated_bangla.csv"
+MIN_POLARITY_SAMPLES = 50  # Skip aspects with fewer samples than this threshold
 
 
-def parse_absa_labels(label_str: str) -> Dict[str, Any]:
-    """Parse composite ABSA labels (delimited by '#' or ';') into structured data."""
-    if not isinstance(label_str, str) or not label_str.strip():
-        return {"aspects": [], "aspect_polarities": {}, "overall_sentiment": "Neutral"}
+def _parse_label(label: str) -> Tuple[List[str], Dict[str, str], str]:
+    """Parse `label` → (aspects, aspect_polarities, overall_sentiment).
 
-    parts = [p.strip() for p in re.split(r"[#;]", label_str) if p.strip()]
-    aspects = set()
-    sentiments = []
-    aspect_polarities = {}
+    Handles both '#' and ';' delimiters. Example:
+        'packaging_negative#product_quality_negative'
+        → (['Packaging', 'Product Quality'],
+           {'Packaging': 'negative', 'Product Quality': 'negative'},
+           'Negative')
+    """
+    if not isinstance(label, str) or not label.strip():
+        return [], {}, "Neutral"
 
-    for part in parts:
-        if "_" in part:
-            aspect_key, polarity = part.rsplit("_", 1)
-            aspect_key_clean = aspect_key.strip().lower()
-            canonical = ASPECT_MAPPING.get(aspect_key_clean, aspect_key.replace("_", " ").title())
-            aspects.add(canonical)
-            pol = polarity.lower().strip()
-            sentiments.append(pol)
-            aspect_polarities[canonical] = pol
+    aspects: List[str] = []
+    polarities: Dict[str, str] = {}
+    for token in re.split(r"[#;]", label):
+        token = token.strip()
+        if "_" not in token:
+            continue
+        key, polarity = token.rsplit("_", 1)
+        aspect = ASPECT_MAPPING.get(key.lower(), key.replace("_", " ").title())
+        aspects.append(aspect)
+        polarities[aspect] = polarity.lower()
 
-    pos_count = sentiments.count("positive")
-    neg_count = sentiments.count("negative")
-
-    if neg_count > 0 and pos_count == 0:
-        overall = "Negative"
-    elif pos_count > 0 and neg_count == 0:
-        overall = "Positive"
-    elif pos_count > neg_count:
-        overall = "Positive"
-    elif neg_count > pos_count:
-        overall = "Negative"
-    else:
-        overall = "Neutral"
-
-    return {
-        "aspects": sorted(list(aspects)),
-        "aspect_polarities": aspect_polarities,
-        "overall_sentiment": overall,
-    }
+    pos = sum(1 for p in polarities.values() if p == "positive")
+    neg = sum(1 for p in polarities.values() if p == "negative")
+    overall = "Positive" if pos > neg else "Negative" if neg > pos else "Neutral"
+    return sorted(list(set(aspects))), polarities, overall
 
 
-def load_data() -> pd.DataFrame:
-    """Load and prepare the annotated Bangla review dataset."""
-    if not PROCESSED_FILE.exists():
-        raise FileNotFoundError(f"Processed dataset not found at {PROCESSED_FILE}")
+def load_data(save_clean: bool = True) -> pd.DataFrame:
+    """Load raw CSV, clean text, parse labels into targets, and optionally save clean CSV.
 
-    df = pd.read_csv(PROCESSED_FILE, index_col=False)
-    # Remove any Unnamed columns and drop duplicates
-    df = df.loc[:, ~df.columns.str.startswith("Unnamed")].copy()
-    df = df.drop_duplicates(subset=["review_id"]).copy()
+    Input (annotated_bangla.csv): review_id | original_text | label
+    Output df: review_id | original_text | cleaned_text | label | sentiment | aspects | aspect_polarities
+    """
+    if not RAW_FILE.exists():
+        raise FileNotFoundError(f"Raw dataset not found at {RAW_FILE}")
 
-    # Ensure clean text preserves negations (re-clean if original_text exists)
-    if "original_text" in df.columns:
-        df["cleaned_text"] = df["original_text"].apply(clean_text)
-    else:
-        df["cleaned_text"] = df["cleaned_text"].fillna("").apply(clean_text)
+    df = pd.read_csv(RAW_FILE, index_col=False)
+    df = df.loc[:, ~df.columns.str.startswith("Unnamed")]
+    if "review_id" in df.columns:
+        df = df.drop_duplicates(subset=["review_id"])
 
-    # Ensure aspects is a list of canonical names
-    if "aspects" not in df.columns:
-        if "aspects_str" in df.columns:
-            df["aspects"] = df["aspects_str"].fillna("").apply(
-                lambda s: [a.strip() for a in str(s).split(";") if a.strip()]
-            )
-        elif "label" in df.columns:
-            parsed = [parse_absa_labels(lbl) for lbl in df["label"]]
-            df["aspects"] = [p["aspects"] for p in parsed]
+    # Clean raw Bangla text
+    source = df["original_text"] if "original_text" in df.columns else df["cleaned_text"]
+    df["cleaned_text"] = source.fillna("").apply(clean_text)
 
-    # Parse aspect_polarities dictionary
-    if "aspect_polarities" not in df.columns and "label" in df.columns:
-        df["aspect_polarities"] = [parse_absa_labels(lbl)["aspect_polarities"] for lbl in df["label"]]
-    elif "aspect_polarities" in df.columns and len(df) > 0 and isinstance(df["aspect_polarities"].iloc[0], str):
-        df["aspect_polarities"] = df["aspect_polarities"].apply(
-            lambda s: ast.literal_eval(s) if isinstance(s, str) and s.startswith("{") else parse_absa_labels(str(s))["aspect_polarities"]
-        )
+    # Parse `label` into structured targets
+    parsed = df["label"].apply(_parse_label)
+    df["aspects"] = parsed.apply(lambda x: x[0])
+    df["aspect_polarities"] = parsed.apply(lambda x: x[1])
+    df["sentiment"] = parsed.apply(lambda x: x[2])
 
-    # Filter out empty texts
     df = df[df["cleaned_text"].str.strip().str.len() > 0].reset_index(drop=True)
+
+    if save_clean:
+        clean_df = df.copy()
+        clean_df["aspects"] = clean_df["aspects"].apply(lambda x: ", ".join(x))
+        clean_df["aspect_polarities"] = clean_df["aspect_polarities"].apply(json.dumps)
+        cols = [c for c in ["review_id", "original_text", "cleaned_text", "label", "sentiment", "aspects", "aspect_polarities"] if c in clean_df.columns]
+        clean_df = clean_df[cols]
+        clean_df.to_csv(CLEAN_FILE, index=False)
+
     return df
 
 
-# Backward-compatible alias
-load_annotated_data = load_data
-
-
-def get_sentiment_split(
-    df: pd.DataFrame
-) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
-    """Stratified 80/20 train/test split for 3-class sentiment analysis."""
-    valid = df.dropna(subset=["sentiment", "cleaned_text"]).copy()
+def get_sentiment_split(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """Stratified 80/20 train/test split for 3-class sentiment."""
     return train_test_split(
-        valid["cleaned_text"],
-        valid["sentiment"],
+        df["cleaned_text"],
+        df["sentiment"],
         test_size=TEST_SIZE,
         random_state=RANDOM_STATE,
-        stratify=valid["sentiment"],
+        stratify=df["sentiment"],
     )
 
 
-def get_aspect_split(
-    df: pd.DataFrame
-) -> Tuple[pd.Series, pd.Series, List[List[str]], List[List[str]]]:
+def get_aspect_split(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, List[List[str]], List[List[str]]]:
     """80/20 train/test split for multi-label aspect detection."""
-    valid = df.dropna(subset=["cleaned_text"]).copy()
-    y_aspects = valid["aspects"].tolist()
-    indices = np.arange(len(valid))
-
-    train_idx, test_idx = train_test_split(
-        indices,
+    tr, te = train_test_split(
+        df.index,
         test_size=TEST_SIZE,
         random_state=RANDOM_STATE,
     )
     return (
-        valid["cleaned_text"].iloc[train_idx],
-        valid["cleaned_text"].iloc[test_idx],
-        [y_aspects[i] for i in train_idx],
-        [y_aspects[i] for i in test_idx],
+        df.loc[tr, "cleaned_text"],
+        df.loc[te, "cleaned_text"],
+        df.loc[tr, "aspects"].tolist(),
+        df.loc[te, "aspects"].tolist(),
     )
 
 
-def get_polarity_split(
-    df: pd.DataFrame,
-    aspect: str
-) -> Optional[Tuple[pd.Series, pd.Series, pd.Series, pd.Series]]:
-    """Binary (Positive vs Negative) split for a specific aspect."""
-    rows = []
-    for _, row in df.iterrows():
-        p_dict = row.get("aspect_polarities", {})
-        if isinstance(p_dict, dict) and aspect in p_dict:
-            pol = str(p_dict[aspect]).lower()
-            if pol in ("positive", "negative"):
-                rows.append({"text": row["cleaned_text"], "polarity": pol.title()})
-
-    sub_df = pd.DataFrame(rows).dropna()
-    if len(sub_df) < ASPECT_MIN_SAMPLES:
+def get_polarity_split(df: pd.DataFrame, aspect: str) -> Optional[Tuple[pd.Series, pd.Series, pd.Series, pd.Series]]:
+    """Binary split for one aspect. Returns None if too few samples."""
+    rows = [
+        {"text": row["cleaned_text"], "polarity": row["aspect_polarities"][aspect].title()}
+        for _, row in df.iterrows()
+        if aspect in row["aspect_polarities"]
+        and row["aspect_polarities"][aspect] in ("positive", "negative")
+    ]
+    if len(rows) < MIN_POLARITY_SAMPLES:
         return None
 
-    counts = sub_df["polarity"].value_counts().to_dict()
-    min_class_count = min(counts.values()) if counts else 0
-    stratify = sub_df["polarity"] if min_class_count >= 2 else None
-
+    sub = pd.DataFrame(rows)
+    counts = sub["polarity"].value_counts()
+    stratify = sub["polarity"] if counts.min() >= 2 else None
     return train_test_split(
-        sub_df["text"],
-        sub_df["polarity"],
+        sub["text"],
+        sub["polarity"],
         test_size=TEST_SIZE,
         random_state=RANDOM_STATE,
         stratify=stratify,
     )
-
-
-# Backward-compatible alias
-get_aspect_polarity_splits = get_polarity_split
