@@ -1,28 +1,22 @@
-"""
-Streamlit Web Application: Bangla Review Sentiment & Aspect Analytics Platform
-Aspect-Based Sentiment Analysis (ABSA) for Daraz Bangladesh.
-"""
-
-import json
 import os
 import sys
 from pathlib import Path
-import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Ensure root directory is in sys.path
 sys.path.insert(0, os.path.abspath("."))
 
-from src.config import ALL_ASPECTS, RESULTS_DIR
-try:
-    from src.models import load_artifacts, predict_aspects, predict_sentiment
-except ImportError:
-    from src.models import load_artifacts, predict_sentiment, predict_issue as predict_aspects
+from src.config import RESULTS_DIR
+from src.models import (
+    load_artifacts,
+    load_polarity_artifacts,
+    predict_aspects_with_polarity,
+    predict_sentiment
+)
 from src.preprocessing import clean_text
 
-# Page Config
+# Streamlit Page Config
 st.set_page_config(
     page_title="Bangla Daraz ABSA Analytics",
     page_icon="🛒",
@@ -47,33 +41,39 @@ st.markdown("""
     .sentiment-pos { color: #10B981; }
     .sentiment-neg { color: #EF4444; }
     .sentiment-neu { color: #F59E0B; }
-    .aspect-badge {
-        display: inline-block;
-        background-color: #EEF2FF;
-        color: #4338CA;
-        padding: 6px 14px;
-        border-radius: 16px;
-        font-size: 0.92rem;
-        font-weight: 600;
-        margin: 4px;
+    .aspect-row {
+        margin-bottom: 8px;
+        padding: 8px 14px;
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
     }
+    .aspect-name { font-weight: 600; color: #1E293B; font-size: 0.95rem; }
+    .aspect-pill { font-weight: 600; font-size: 0.85rem; padding: 3px 10px; border-radius: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
 
 @st.cache_resource
 def load_all_models():
-    """Load both TF-IDF and BanglaBERT model artifacts."""
+    """Load model artifacts and polarity classifiers."""
     loaded = {"status": "ready", "tfidf": {}, "bert": {}}
     try:
         s_m_tf, s_v_tf, _ = load_artifacts("sentiment", "tfidf")
         a_m_tf, a_v_tf, a_b_tf = load_artifacts("issue", "tfidf")
+        p_models_tf = load_polarity_artifacts("tfidf")
+
         loaded["tfidf"] = {
             "sentiment_model": s_m_tf,
             "sentiment_vectorizer": s_v_tf,
             "aspect_model": a_m_tf,
             "aspect_vectorizer": a_v_tf,
-            "aspect_binarizer": a_b_tf
+            "aspect_binarizer": a_b_tf,
+            "polarity_models": p_models_tf
         }
 
         s_m_bt, _, _ = load_artifacts("sentiment", "bert")
@@ -81,7 +81,8 @@ def load_all_models():
         loaded["bert"] = {
             "sentiment_model": s_m_bt,
             "aspect_model": a_m_bt,
-            "aspect_binarizer": a_b_bt or a_b_tf
+            "aspect_binarizer": a_b_bt or a_b_tf,
+            "polarity_models": p_models_tf
         }
     except Exception as e:
         loaded["status"] = "error"
@@ -101,7 +102,7 @@ def load_dataset():
 
 @st.cache_data
 def load_benchmarks():
-    """Load model comparison benchmarks from results/."""
+    """Load model comparison benchmarks."""
     comp_path = RESULTS_DIR / "model_comparison.csv"
     if comp_path.exists():
         return pd.read_csv(comp_path)
@@ -126,14 +127,14 @@ st.sidebar.subheader("Model Architecture")
 selected_model = st.sidebar.radio(
     "Select Model:",
     ["TF-IDF", "BanglaBERT"],
-    help="Toggle between TF-IDF (N-gram Union) and BanglaBERT feature representations."
+    help="Toggle between TF-IDF (N-gram Union) and BanglaBERT representations."
 )
 
 st.sidebar.markdown("---")
 st.sidebar.info(
     f"**Corpus**: Mendeley ABSA Dataset\n\n"
     f"**Total Annotated Reviews**: {len(dataset_df):,} rows\n\n"
-    f"**Aspects**: 5 Product Dimensions"
+    f"**Aspects**: 5 Dimensions (Quality, Price, Delivery, Packaging, Seller)"
 )
 
 
@@ -142,7 +143,7 @@ st.sidebar.info(
 # -----------------------------------------------------------------------------
 if view_mode == "🔍 Review Analyzer":
     st.markdown('<div class="main-header">Bangla Review Sentiment & Aspect Analyzer</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="sub-header">Live NLP inference using <b>{selected_model}</b> pipeline.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sub-header">Hierarchical ABSA live inference via <b>{selected_model}</b> pipeline.</div>', unsafe_allow_html=True)
 
     if models_data["status"] != "ready":
         st.error(f"Models not loaded: {models_data.get('message')}. Please run `python train_models.py` first.")
@@ -161,7 +162,7 @@ if view_mode == "🔍 Review Analyzer":
     }
 
     selected_preset = st.selectbox("💡 Quick Test Presets:", list(presets.keys()))
-    default_text = presets[selected_preset]
+    default_text = presets.get(selected_preset or "", "")
 
     user_text = st.text_area(
         "Enter Bangla Review Text:",
@@ -174,31 +175,41 @@ if view_mode == "🔍 Review Analyzer":
         if not user_text.strip():
             st.warning("Please enter some text before analyzing.")
         else:
-            with st.spinner(f"Analyzing with {selected_model}..."):
-                cleaned = clean_text(user_text)
+            try:
+                with st.spinner(f"Analyzing with {selected_model}..."):
+                    cleaned = clean_text(user_text)
 
-                if use_bert:
-                    s_res = predict_sentiment(user_text, active["sentiment_model"], use_bert=True)
-                    a_res = predict_aspects(
-                        user_text,
-                        active["aspect_model"],
-                        binarizer=active["aspect_binarizer"],
-                        use_bert=True
-                    )
-                else:
-                    s_res = predict_sentiment(
-                        user_text,
-                        active["sentiment_model"],
-                        vectorizer=active["sentiment_vectorizer"],
-                        use_bert=False
-                    )
-                    a_res = predict_aspects(
-                        user_text,
-                        active["aspect_model"],
-                        vectorizer=active["aspect_vectorizer"],
-                        binarizer=active["aspect_binarizer"],
-                        use_bert=False
-                    )
+                    if use_bert:
+                        s_res = predict_sentiment(user_text, active["sentiment_model"], use_bert=True)
+                        a_res = predict_aspects_with_polarity(
+                            user_text,
+                            active["aspect_model"],
+                            polarity_models=active.get("polarity_models", {}),
+                            binarizer=active["aspect_binarizer"],
+                            use_bert=True
+                        )
+                    else:
+                        s_res = predict_sentiment(
+                            user_text,
+                            active["sentiment_model"],
+                            vectorizer=active["sentiment_vectorizer"],
+                            use_bert=False
+                        )
+                        a_res = predict_aspects_with_polarity(
+                            user_text,
+                            active["aspect_model"],
+                            polarity_models=active.get("polarity_models", {}),
+                            vectorizer=active["aspect_vectorizer"],
+                            binarizer=active["aspect_binarizer"],
+                            use_bert=False
+                        )
+            except ImportError as ie:
+                st.error(f"⚠️ {str(ie)}")
+                st.info("💡 Switch to the **TF-IDF** pipeline in the sidebar for instant real-time inference without PyTorch.")
+                st.stop()
+            except Exception as e:
+                st.error(f"Inference Error: {str(e)}")
+                st.stop()
 
             st.markdown("---")
             st.subheader("NLP Prediction Results")
@@ -213,7 +224,7 @@ if view_mode == "🔍 Review Analyzer":
 
                 st.markdown(f"""
                 <div class="kpi-card">
-                    <div class="kpi-title">Predicted Sentiment</div>
+                    <div class="kpi-title">Overall Predicted Sentiment</div>
                     <div class="kpi-value {s_cls}">{s_ico} {s_lbl}</div>
                     <div style="font-size: 0.85rem; color: #64748B; margin-top: 4px;">Confidence: {s_res['confidence']*100:.1f}%</div>
                 </div>
@@ -235,14 +246,32 @@ if view_mode == "🔍 Review Analyzer":
             with c2:
                 st.markdown("""
                 <div class="kpi-card">
-                    <div class="kpi-title">Detected Aspects</div>
+                    <div class="kpi-title">Detected Aspects & Specific Polarities</div>
                     <div style="margin-top: 10px;">
                 """, unsafe_allow_html=True)
 
-                asp_html = ""
-                for asp in a_res["aspects"]:
-                    asp_html += f'<span class="aspect-badge">🏷️ {asp}</span>'
-                st.markdown(asp_html, unsafe_allow_html=True)
+                aspect_details = a_res.get("aspect_details", [])
+                if aspect_details:
+                    asp_html = ""
+                    for item in aspect_details:
+                        asp = item["aspect"]
+                        pol = item["polarity"]
+                        icon = item["icon"]
+                        conf = item["confidence"] * 100
+                        color = item["color"]
+                        bg_color = item.get("bg_color", "#ECFDF5" if pol == "Positive" else "#FEF2F2")
+                        asp_html += (
+                            f'<div class="aspect-row">'
+                            f'  <span class="aspect-name">🏷️ {asp}</span>'
+                            f'  <span class="aspect-pill" style="color: {color}; background-color: {bg_color}; border: 1px solid {color}44;">'
+                            f'    {icon} {pol} <span style="font-size: 0.78rem; opacity: 0.85;">({conf:.1f}%)</span>'
+                            f'  </span>'
+                            f'</div>'
+                        )
+                    st.markdown(asp_html, unsafe_allow_html=True)
+                else:
+                    st.markdown("<em>No specific aspect detected.</em>", unsafe_allow_html=True)
+
                 st.markdown("</div></div>", unsafe_allow_html=True)
 
             with st.expander("🔍 Cleaned Bangla Tokens"):
@@ -254,10 +283,10 @@ if view_mode == "🔍 Review Analyzer":
 # -----------------------------------------------------------------------------
 elif view_mode == "📈 Benchmarks & Data Insights":
     st.markdown('<div class="main-header">Model Performance & Empirical Benchmarks</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Direct evaluation on held-out 20% test sets (404 reviews).</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Evaluation on held-out 20% test sets (Stratified ABSA splits).</div>', unsafe_allow_html=True)
 
     if not comparison_df.empty:
-        st.subheader("1. Dual-Model Benchmark Summary (4 Configurations)")
+        st.subheader("1. Comprehensive Model Benchmark Summary")
         st.dataframe(comparison_df, width="stretch")
     else:
         st.info("Run `python train_models.py` to generate the benchmark table.")
@@ -319,7 +348,7 @@ elif view_mode == "📈 Benchmarks & Data Insights":
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #9CA3AF; font-size: 0.85rem;'>"
-    "Bangla Daraz Review Analytics • Sentiment & Aspect NLP Platform"
+    "Bangla Daraz Review Analytics • Hierarchical Aspect-Based Sentiment Analysis (ABSA)"
     "</div>",
     unsafe_allow_html=True
 )

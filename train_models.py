@@ -1,31 +1,11 @@
-"""
-Orchestration Training Pipeline for Bangla Review Analytics.
-Trains and benchmarks both TF-IDF and BanglaBERT model variants across:
-1. Sentiment Analysis (3-class)
-2. Aspect Detection (Multi-Label)
-"""
-
 import os
 import sys
 import time
-from pathlib import Path
 
-# Ensure root directory is in sys.path
 sys.path.insert(0, os.path.abspath("."))
 
-from src.config import (
-    ALL_ASPECTS,
-    MODELS_CACHE,
-    MODELS_DIR,
-    RESULTS_DIR,
-    SENTIMENT_LABELS,
-    ensure_dirs
-)
-from src.data_processing import (
-    get_aspect_split,
-    get_sentiment_split,
-    load_annotated_data
-)
+from src.config import MODELS_CACHE, SENTIMENT_LABELS, ensure_dirs
+from src.data_processing import get_aspect_split, get_sentiment_split, load_annotated_data
 from src.embeddings import get_or_cache_bert_features
 from src.evaluation import (
     plot_and_save_confusion_matrix,
@@ -35,7 +15,9 @@ from src.evaluation import (
 )
 from src.models import (
     save_artifacts,
+    save_polarity_artifacts,
     train_aspect_bert,
+    train_aspect_polarity_tfidf,
     train_aspect_tfidf,
     train_sentiment_bert,
     train_sentiment_tfidf
@@ -44,26 +26,21 @@ from src.models import (
 
 def main():
     start_time = time.time()
-    print("=" * 70)
-    print("   BANGLA DARAZ REVIEW ANALYTICS - ABSA TRAINING PIPELINE   ")
-    print("=" * 70)
+    print("=" * 60)
+    print("   BANGLA DARAZ ABSA - TRAINING & BENCHMARKING PIPELINE   ")
+    print("=" * 60)
 
     ensure_dirs()
 
-    # 1. Load Data
-    print("\n[Step 1/5] Loading annotated Bangla ABSA dataset...")
+    # 1. Load Data & Splits
+    print("\n[Step 1/4] Loading dataset and creating 80/20 splits...")
     df = load_annotated_data()
-    print(f"  ✓ Loaded {len(df):,} expert-annotated reviews.")
-
-    # 2. Train/Test Splits
-    print("\n[Step 2/5] Creating stratified 80/20 train/test splits...")
     X_train_s, X_test_s, y_train_s, y_test_s = get_sentiment_split(df)
     X_train_a, X_test_a, y_train_a, y_test_a = get_aspect_split(df)
-    print(f"  ✓ Sentiment Split: {len(X_train_s):,} train | {len(X_test_s):,} test")
-    print(f"  ✓ Aspect Split:    {len(X_train_a):,} train | {len(X_test_a):,} test")
+    print(f"  ✓ Loaded {len(df):,} reviews | Sentiment Split: {len(X_train_s)} train, {len(X_test_s)} test")
 
-    # 3. TF-IDF Models
-    print("\n[Step 3/5] Training TF-IDF (Word + Char Union) models...")
+    # 2. TF-IDF Models
+    print("\n[Step 2/4] Training TF-IDF models (Sentiment, Aspects, Polarities)...")
     s_model_tf, s_vec_tf, s_metrics_tf = train_sentiment_tfidf(X_train_s, y_train_s, X_test_s, y_test_s)
     save_artifacts("sentiment", s_model_tf, s_vec_tf, model_type="tfidf")
     plot_and_save_confusion_matrix(
@@ -80,8 +57,16 @@ def main():
     save_classification_report_csv(a_metrics_tf["report"], "issue_tfidf.csv")
     print(f"  ✓ [TF-IDF] Aspects   -> Micro-F1: {a_metrics_tf['micro_f1']:.4f} | Hamming Loss: {a_metrics_tf['hamming_loss']:.4f}")
 
-    # 4. BanglaBERT Models
-    print("\n[Step 4/5] Extracting BanglaBERT embeddings & training classifiers...")
+    polarity_models_tf = train_aspect_polarity_tfidf(df)
+    save_polarity_artifacts(polarity_models_tf, model_type="tfidf")
+    for asp, p_data in polarity_models_tf.items():
+        m = p_data["metrics"]
+        safe_name = asp.lower().replace(" ", "_")
+        save_classification_report_csv(m["report"], f"polarity_{safe_name}_tfidf.csv")
+        print(f"  ✓ [TF-IDF] {asp:15s} Polarity -> Acc: {m['accuracy']:.4f} | Macro-F1: {m['macro_f1']:.4f}")
+
+    # 3. BanglaBERT Models
+    print("\n[Step 3/4] Extracting BanglaBERT embeddings & training classifiers...")
     s_train_bert = get_or_cache_bert_features(X_train_s, MODELS_CACHE / "sentiment_train.npy")
     s_test_bert = get_or_cache_bert_features(X_test_s, MODELS_CACHE / "sentiment_test.npy")
     a_train_bert = get_or_cache_bert_features(X_train_a, MODELS_CACHE / "issue_train.npy")
@@ -103,8 +88,8 @@ def main():
     save_classification_report_csv(a_metrics_bt["report"], "issue_bert.csv")
     print(f"  ✓ [BanglaBERT] Aspects   -> Micro-F1: {a_metrics_bt['micro_f1']:.4f} | Hamming Loss: {a_metrics_bt['hamming_loss']:.4f}")
 
-    # 5. Export Benchmark Reports
-    print("\n[Step 5/5] Exporting benchmark comparison tables & summaries...")
+    # 4. Save Benchmark Summaries
+    print("\n[Step 4/4] Exporting benchmark tables and metrics...")
     comparison_rows = [
         {
             "Task": "Sentiment Analysis",
@@ -139,6 +124,18 @@ def main():
             "Additional Metric": f"Hamming Loss: {a_metrics_bt['hamming_loss']:.4f}"
         }
     ]
+
+    for asp, p_data in polarity_models_tf.items():
+        m = p_data["metrics"]
+        comparison_rows.append({
+            "Task": f"Polarity: {asp}",
+            "Model": "TF-IDF + Balanced Binary LogReg",
+            "Accuracy": round(m["accuracy"], 4),
+            "Macro F1": round(m["macro_f1"], 4),
+            "Weighted F1": round(m["weighted_f1"], 4),
+            "Additional Metric": f"Samples: {p_data['n_train']+p_data['n_test']} (Train:{p_data['n_train']})"
+        })
+
     save_model_comparison_csv(comparison_rows, "model_comparison.csv")
 
     metrics_summary = {
@@ -154,14 +151,23 @@ def main():
         "aspect_detection": {
             "tfidf": a_metrics_tf,
             "banglabert": a_metrics_bt
+        },
+        "aspect_polarities": {
+            asp: {
+                "accuracy": p_data["metrics"]["accuracy"],
+                "macro_f1": p_data["metrics"]["macro_f1"],
+                "n_train": p_data["n_train"],
+                "n_test": p_data["n_test"]
+            }
+            for asp, p_data in polarity_models_tf.items()
         }
     }
     save_metrics_summary_json(metrics_summary, "metrics_summary.json")
 
     elapsed = time.time() - start_time
-    print("\n" + "=" * 70)
-    print(f"          TRAINING PIPELINE COMPLETED IN {elapsed:.1f}s!         ")
-    print("=" * 70)
+    print("\n" + "=" * 60)
+    print(f"       TRAINING PIPELINE COMPLETED IN {elapsed:.1f}s!      ")
+    print("=" * 60)
 
 
 if __name__ == "__main__":
