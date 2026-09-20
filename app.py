@@ -2,7 +2,6 @@ import os
 import sys
 from typing import Any, Dict, Optional
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.preprocessing import MultiLabelBinarizer
 import streamlit as st
@@ -57,7 +56,6 @@ def load_benchmarks() -> pd.DataFrame:
     if comp_path.exists():
         try:
             df = pd.read_csv(comp_path)
-            # Standardize column names for clean presentation
             df.columns = ["Task", "Model", "Accuracy", "Macro F1", "Weighted F1", "Additional"]
             return df
         except Exception:
@@ -87,8 +85,26 @@ def main() -> None:
             font-size: 1.85rem;
             font-weight: 800;
             color: #1E293B;
-            margin-bottom: 1.2rem;
+            margin-bottom: 0.5rem;
             letter-spacing: -0.02em;
+        }
+
+        /* Active model badge */
+        .model-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: #64748B;
+            margin-bottom: 1.2rem;
+        }
+        .model-pill {
+            font-weight: 600;
+            color: #2563EB;
+            background: #EFF6FF;
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid #DBEAFE;
         }
 
         /* Section Headings */
@@ -161,12 +177,36 @@ def main() -> None:
 
     st.markdown('<div class="app-title">Daraz Review Analyzer</div>', unsafe_allow_html=True)
 
+    PRESETS = {
+        "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
+        "Positive Quality & Fast Delivery": "প্রোডাক্ট খুব ভালো ছিল, ডেলিভারিও দ্রুত পেয়েছি। ধন্যবাদ।",
+        "Negative Delay & Poor Quality": "ডেলিভারি অনেক দেরি হয়েছে, প্রোডাক্টও বাজে কোয়ালিটি।",
+        "Negation Test (Poor Battery, Good Sound)": "সাউন্ড কোয়ালিটি ভালো কিন্তু ব্যাটারি ভালো না একদমই।",
+        "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।",
+        "Custom / Clear": "",
+    }
+
     # Initialize Session State
     if "selected_model" not in st.session_state:
         st.session_state["selected_model"] = "TF-IDF"
-    if "review_input" not in st.session_state:
-        st.session_state["review_input"] = "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।"
+    if "user_review_text" not in st.session_state:
+        st.session_state["user_review_text"] = PRESETS["Damaged Packaging & Good Product"]
     if "analysis_results" not in st.session_state:
+        st.session_state["analysis_results"] = None
+
+    # Callbacks to manage widget state safely before rerun
+    def on_preset_change():
+        chosen = st.session_state.get("preset_selector")
+        if chosen in PRESETS:
+            st.session_state["user_review_text"] = PRESETS[chosen]
+            st.session_state["analysis_results"] = None
+
+    def on_reset():
+        st.session_state["user_review_text"] = ""
+        st.session_state["analysis_results"] = None
+        st.session_state["preset_selector"] = "Custom / Clear"
+
+    def on_model_change():
         st.session_state["analysis_results"] = None
 
     tab_dash, tab_settings = st.tabs(["Dashboard", "Settings"])
@@ -175,58 +215,44 @@ def main() -> None:
     # TAB 1: DASHBOARD
     # =========================================================================
     with tab_dash:
-        presets = {
-            "Damaged Packaging & Good Product": "প্রোডাক্ট ভালো কিন্তু প্যাকেজিং নষ্ট ছিল।",
-            "Positive Quality & Fast Delivery": "প্রোডাক্ট খুব ভালো ছিল, ডেলিভারিও দ্রুত পেয়েছি। ধন্যবাদ।",
-            "Negative Delay & Poor Quality": "ডেলিভারি অনেক দেরি হয়েছে, প্রোডাক্টও বাজে কোয়ালিটি।",
-            "Negation Test (Poor Battery, Good Sound)": "সাউন্ড কোয়ালিটি ভালো কিন্তু ব্যাটারি ভালো না একদমই।",
-            "Price Concern & Seller Service": "দাম অনেক বেশি কিন্তু সেলার খুব হেল্পফুল ছিল।",
-            "Custom / Clear": ""
-        }
+        current_model = st.session_state.get("selected_model", "TF-IDF")
+        st.markdown(
+            f'<div class="model-badge">Active Model: <span class="model-pill">{current_model}</span></div>',
+            unsafe_allow_html=True
+        )
 
-        def on_preset_change():
-            chosen = st.session_state.get("preset_selector")
-            if chosen in presets:
-                st.session_state["review_input"] = presets[chosen]
-
-        selected_preset = st.selectbox(
+        st.selectbox(
             "Quick Test Presets",
-            options=list(presets.keys()),
-            index=0,
+            options=list(PRESETS.keys()),
             key="preset_selector",
             on_change=on_preset_change,
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
 
-        user_text = st.text_area(
-            "Input",
-            value=st.session_state["review_input"],
+        st.text_area(
+            "Review Input",
+            key="user_review_text",
             height=100,
             placeholder="দারাজ রিভিউ এখানে লিখুন...",
-            key="user_review_text"
+            label_visibility="collapsed",
         )
-        st.session_state["review_input"] = user_text
 
         col_btn1, col_btn2 = st.columns([1, 1])
         with col_btn1:
             analyze_clicked = st.button("Analyze", type="primary", use_container_width=True)
         with col_btn2:
-            reset_clicked = st.button("Reset", use_container_width=True)
-
-        if reset_clicked:
-            st.session_state["review_input"] = ""
-            st.session_state["analysis_results"] = None
-            st.rerun()
+            st.button("Reset", on_click=on_reset, use_container_width=True)
 
         if analyze_clicked:
-            if not user_text.strip():
+            raw_text = st.session_state.get("user_review_text", "").strip()
+            if not raw_text:
                 st.warning("Please enter review text before analyzing.")
             else:
                 try:
                     active = get_model_bundle(st.session_state["selected_model"])
-                    with st.spinner(f"Analyzing review..."):
+                    with st.spinner("Analyzing review..."):
                         s_res = predict_sentiment(
-                            user_text,
+                            raw_text,
                             active["sentiment_model"],
                             vectorizer=active.get("sentiment_vectorizer"),
                             vocab=active.get("vocab"),
@@ -234,7 +260,7 @@ def main() -> None:
                         pol_map: Dict[str, Dict[str, Any]] = active.get("polarity_models") or {}
                         asp_bin: Optional[MultiLabelBinarizer] = active.get("aspect_binarizer")
                         a_res = predict_hierarchical(
-                            user_text,
+                            raw_text,
                             active["aspect_model"],
                             polarity_models=pol_map,
                             vectorizer=active.get("aspect_vectorizer"),
@@ -243,7 +269,7 @@ def main() -> None:
                         )
                         st.session_state["analysis_results"] = {
                             "sentiment": s_res,
-                            "aspects": a_res
+                            "aspects": a_res,
                         }
                 except Exception as e:
                     st.error(f"Inference Error: {str(e)}")
@@ -283,9 +309,9 @@ def main() -> None:
                         orientation="h",
                         marker=dict(color=colors),
                         text=[f"{v:.1f}%" for v in values],
-                        textposition="inside",
+                        textposition=["inside" if v > 15 else "outside" for v in values],
                         insidetextanchor="middle",
-                        textfont=dict(color="white", size=11, family="sans-serif")
+                        textfont=dict(color=["white" if v > 15 else "#475569" for v in values], size=11, family="sans-serif"),
                     )
                 )
                 fig_sent.update_layout(
@@ -345,18 +371,13 @@ def main() -> None:
     with tab_settings:
         st.markdown('<div class="section-header">Model Configuration</div>', unsafe_allow_html=True)
 
-        current_model_idx = 0 if st.session_state["selected_model"] == "TF-IDF" else 1
-        new_model = st.radio(
+        st.radio(
             "Select Model Architecture:",
             options=["TF-IDF", "LSTM"],
-            index=current_model_idx,
+            key="selected_model",
+            on_change=on_model_change,
             help="Choose between TF-IDF (N-gram feature union) and LSTM (PyTorch sequential deep model)."
         )
-
-        if new_model != st.session_state["selected_model"]:
-            st.session_state["selected_model"] = new_model
-            st.session_state["analysis_results"] = None
-            st.rerun()
 
         st.markdown("<hr style='border: 0; border-top: 1px solid #E2E8F0; margin: 24px 0;' />", unsafe_allow_html=True)
 
@@ -376,31 +397,62 @@ def main() -> None:
 
         st.markdown('<div class="section-header" style="font-size: 1.05rem;">Performance Comparison (F1 Score)</div>', unsafe_allow_html=True)
 
-        # Plot grouped bar chart matching image
-        tasks = ["Sentiment Analysis", "Aspect Detection"]
-        tfidf_macro_f1 = [0.8490, 0.8038]
-        lstm_macro_f1 = [0.7455, 0.4986]
+        # Dynamically extract Macro F1 values from comparison_df if available
+        s_tfidf_f1 = 0.8490
+        s_lstm_f1 = 0.7846
+        a_tfidf_f1 = 0.8038
+        a_lstm_f1 = 0.4986
 
+        if not comparison_df.empty and "Task" in comparison_df.columns:
+            try:
+                s_t = comparison_df[(comparison_df["Task"] == "Sentiment Analysis") & (comparison_df["Model"].str.contains("TF-IDF"))]
+                if not s_t.empty:
+                    s_tfidf_f1 = float(s_t.iloc[0]["Macro F1"])
+                s_l = comparison_df[(comparison_df["Task"] == "Sentiment Analysis") & (comparison_df["Model"].str.contains("LSTM"))]
+                if not s_l.empty:
+                    s_lstm_f1 = float(s_l.iloc[0]["Macro F1"])
+                a_t = comparison_df[(comparison_df["Task"] == "Aspect Detection") & (comparison_df["Model"].str.contains("TF-IDF"))]
+                if not a_t.empty:
+                    a_tfidf_f1 = float(a_t.iloc[0]["Macro F1"])
+                a_l = comparison_df[(comparison_df["Task"] == "Aspect Detection") & (comparison_df["Model"].str.contains("LSTM"))]
+                if not a_l.empty:
+                    a_lstm_f1 = float(a_l.iloc[0]["Macro F1"])
+            except Exception:
+                pass
+
+        tasks = ["Sentiment Analysis", "Aspect Detection"]
         fig_comp = go.Figure(data=[
-            go.Bar(name='TF-IDF + Logistic Regression', x=[tasks[0]], y=[tfidf_macro_f1[0]], marker_color='#3B82F6'),
-            go.Bar(name='LSTM (PyTorch)', x=tasks, y=lstm_macro_f1, marker_color='#10B981'),
-            go.Bar(name='TF-IDF + OneVsRest LogReg', x=[tasks[1]], y=[tfidf_macro_f1[1]], marker_color='#3B82F6')
+            go.Bar(
+                name="TF-IDF",
+                x=tasks,
+                y=[s_tfidf_f1, a_tfidf_f1],
+                marker_color="#3B82F6",
+                text=[f"{s_tfidf_f1:.4f}", f"{a_tfidf_f1:.4f}"],
+                textposition="auto"
+            ),
+            go.Bar(
+                name="PyTorch BiLSTM",
+                x=tasks,
+                y=[s_lstm_f1, a_lstm_f1],
+                marker_color="#10B981",
+                text=[f"{s_lstm_f1:.4f}", f"{a_lstm_f1:.4f}"],
+                textposition="auto"
+            )
         ])
 
         fig_comp.update_layout(
-            barmode='group',
+            barmode="group",
             height=340,
-            margin=dict(t=10, b=30, l=40, r=20),
+            margin=dict(t=15, b=30, l=40, r=20),
             xaxis=dict(title="Task"),
             yaxis=dict(title="Macro F1", range=[0, 1.0]),
             legend=dict(
-                title=dict(text="Model", font=dict(size=10)),
-                font=dict(size=9),
-                orientation="v",
-                yanchor="top",
-                y=1.0,
-                xanchor="left",
-                x=1.02
+                title=dict(text="Model Family"),
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
             ),
             plot_bgcolor="white",
             paper_bgcolor="white"
